@@ -16,7 +16,7 @@ DEFAULTS: dict = {
     "username": "",
     "password": "",
     # ---- 刷分策略 ----
-    "strategy_order": ["exercise", "article", "video"],  # 每日答题 > 图文 > 视频
+    "strategy_order": ["article", "video", "exercise"],  # 图文 > 视频 > 每日答题
     "weekly_target": 30,
     # ---- DeepSeek API ----
     "deepseek_api_key": "",
