@@ -18,8 +18,6 @@ if getattr(sys, 'frozen', False):
 else:
     _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-DEBUG_DIR = os.path.join(_BASE_DIR, "debug_screenshots")
-
 
 class TaskExecutor:
     """自动化任务执行器"""
@@ -41,48 +39,6 @@ class TaskExecutor:
 
     async def _error(self, msg: str):
         await self.log("error", msg)
-
-    # ---- 调试截图 + AI 分析 ----
-    async def _screenshot(self, name: str):
-        if not self.page:
-            return
-        try:
-            os.makedirs(DEBUG_DIR, exist_ok=True)
-            path = os.path.join(DEBUG_DIR, f"{name}_{int(time.time())}.png")
-            await self.page.screenshot(path=path, full_page=True)
-            await self._info(f"截图: {path}")
-        except Exception:
-            pass
-
-    async def _screenshot_and_analyze(self, name: str, prompt: str = ""):
-        """截图并用 Ollama 分析页面内容"""
-        if not self.page:
-            return
-        try:
-            os.makedirs(DEBUG_DIR, exist_ok=True)
-            path = os.path.join(DEBUG_DIR, f"{name}_{int(time.time())}.png")
-            await self.page.screenshot(path=path, full_page=False)
-            await self._info(f"截图+分析: {name}")
-
-            if not prompt:
-                prompt = "列出页面所有可见按钮、链接、可点击元素的文字和CSS类名。描述页面布局。"
-
-            import subprocess
-            result = subprocess.run(
-                [r"E:\python3.13 install\python.exe",
-                 r"C:\Users\As\.claude\skills\local-multimodal\vision.py",
-                 path, "--prompt", prompt],
-                capture_output=True, text=True, timeout=60
-            )
-            analysis = result.stdout.strip() or result.stderr.strip()
-            # 只输出前500字
-            if analysis:
-                lines = analysis.split("\n")
-                for line in lines[:15]:
-                    if line.strip():
-                        await self._info(f"  [AI分析] {line.strip()[:120]}")
-        except Exception as e:
-            await self._warn(f"截图分析失败: {e}")
 
     # ---- 浏览器生命周期 ----
     async def start_browser(self) -> Page | None:
@@ -317,7 +273,6 @@ class TaskExecutor:
             return 0
 
         await self._dump_page("article")
-        await self._screenshot("article_page")
 
         seen = set()
         for i in range(count):
@@ -327,7 +282,6 @@ class TaskExecutor:
             clicked = await self._click_article_card(seen)
             if not clicked:
                 await self._warn("图文: 未找到可点击的文章")
-                await self._screenshot("article_no_card")
                 break
             await self._wait_content()
             await self._info("  等待学习倒计时...")
@@ -429,7 +383,6 @@ class TaskExecutor:
             return 0
 
         await self._dump_page(f"video{tab}")
-        await self._screenshot(f"video_tab{tab}")
 
         seen = set()  # 去重
         for i in range(count):
@@ -439,7 +392,6 @@ class TaskExecutor:
             clicked = await self._click_article_card(seen)
             if not clicked:
                 await self._warn(f"视频({tab_name}): 未找到可点击的视频")
-                await self._screenshot(f"video{tab}_no_card")
                 break
             await self._wait_content()
             await self._click_play()
@@ -532,7 +484,6 @@ class TaskExecutor:
         await self.page.goto(url, wait_until="networkidle", timeout=30000)
         await self._wait_content()
         await self._dump_page("exercise")
-        await self._screenshot("exercise_page")
 
         # 拦截 submitAnswer（用列表包装避免闭包引用问题）
         submit_holder: list = [None]
@@ -968,7 +919,6 @@ class TaskExecutor:
             return result
         await start_btn.click()
         await self._wait_content()
-        await self._screenshot("mock_exam_page")
 
         # 展开所有折叠的题型区域
         await self.page.evaluate("""() => {
