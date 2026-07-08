@@ -1,6 +1,6 @@
 # OverWall - 你有张良计 我有过墙梯
 
-> v1.0 — 某企业安全积分自动化脚本
+> v1.1 — 某企业安全积分自动化脚本
 
 ## 功能
 
@@ -19,15 +19,28 @@
 - **AI**: DeepSeek API（支持 V3 / R1 / V4 Pro）
 - **题库**: JSON 本地存储，MD5 去重，置信度分级
 
+## 系统兼容性
+
+| 打包版本 | 适用系统 | 说明 |
+|---------|---------|------|
+| `dist/OverWall_Win11.exe` | **Windows 10 / Windows 11 (64位)** | Python 3.13 构建，开箱即用 |
+| 源码运行 | Windows / macOS / Linux | 需 Python 3.9+ 环境 |
+
+> Windows 7 和 Windows 8/8.1 不再支持。老系统缺少新版 API Set（`api-ms-win-core-path-l1-1-0` 等），无法运行打包后的 exe，直接源码运行也不保证稳定性。
+
 ## 快速开始
+
+### 方式一：直接运行 exe（Windows 10/11）
+
+下载 `dist/OverWall_Win11.exe`，双击运行，浏览器自动打开 `http://127.0.0.1:15888`
+
+### 方式二：源码运行
 
 ```bash
 pip install -r requirements.txt
 python -m playwright install chromium
 python main.py
 ```
-
-浏览器打开 `http://127.0.0.1:15888`
 
 ## 文件说明
 
@@ -60,7 +73,24 @@ python main.py
 
 | 版本 | 日期 | 主要变更 |
 |------|------|---------|
+| v1.1 | 2026-07-09 | Win10/11 exe 打包 + 圆角图标 + 系统兼容性说明 |
 | v1.0 | 2026-07-09 | 首版发布：每日练习/图文/视频/模拟考试 + AI答题 + 题库系统 |
+
+## v1.1 更新
+
+- PyInstaller 打包为独立 exe：`dist/OverWall_Win11.exe`，免安装 Python 环境
+- 圆角图标：6 尺寸（16~256px），四角透明无白底
+- 系统兼容性说明：Win10/11 开箱即用，Win7/8 不再支持
+- 添加 `OverWall.spec` 打包配置文件
+
+### XTong 的贡献
+- **兼容性测试**：Win7 老电脑实测，发现 API Set DLL 缺失问题
+- **图标优化**：指出四角直角白底问题，提出圆角需求
+
+### Claude (AI Assistant) 的贡献
+- **打包构建**：PyInstaller 配置 + 多 Python 版本兼容调试（3.8/3.9/3.13）
+- **图标处理**：Pillow 圆角遮罩 + 多尺寸 ICO 生成
+- **文档更新**：兼容性说明 + 版本演进
 
 ## v1.0 更新
 
