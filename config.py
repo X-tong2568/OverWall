@@ -3,9 +3,16 @@
 """
 import json
 import os
+import sys
 from crypto_utils import encrypt, decrypt
 
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+# PyInstaller 打包后数据存到 exe 同目录，避免写入临时文件夹
+if getattr(sys, 'frozen', False):
+    _BASE_DIR = os.path.dirname(sys.executable)
+else:
+    _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+CONFIG_FILE = os.path.join(_BASE_DIR, "config.json")
 
 # 需要加密存储的字段
 _SENSITIVE_KEYS = ["password", "deepseek_api_key"]

@@ -5,9 +5,15 @@ import hashlib
 import json
 import os
 import re
+import sys
 
-# 题库文件路径
-BANK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "question_bank.json")
+# PyInstaller 打包后数据存到 exe 同目录，避免写入临时文件夹
+if getattr(sys, 'frozen', False):
+    _BASE_DIR = os.path.dirname(sys.executable)
+else:
+    _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+BANK_FILE = os.path.join(_BASE_DIR, "question_bank.json")
 
 
 def _hash_text(text: str) -> str:

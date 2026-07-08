@@ -5,13 +5,20 @@ import asyncio
 import json
 import os
 import re
+import sys
 import time
 from playwright.async_api import async_playwright, Page, Browser
 
 from question_bank import lookup_question, record_answer
 from ai_solver import query_deepseek, query_deepseek_fill, extract_correct_from_response
 
-DEBUG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_screenshots")
+# PyInstaller 打包后数据存到 exe 同目录，避免写入临时文件夹
+if getattr(sys, 'frozen', False):
+    _BASE_DIR = os.path.dirname(sys.executable)
+else:
+    _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+DEBUG_DIR = os.path.join(_BASE_DIR, "debug_screenshots")
 
 
 class TaskExecutor:
