@@ -1,0 +1,32 @@
+# 敏感配置（含加密后的账号密码、API Key）
+config.json
+
+# 题库数据
+question_bank.json
+
+# Cookie
+cookies.json
+
+# 调试截图
+debug_screenshots/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 虚拟环境
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+
+# 临时文件
+*.tmp
+*.log
+
+# 图标源文件
+*.png
+*.jpg
