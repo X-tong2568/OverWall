@@ -117,7 +117,6 @@ python main.py
 ### XTong 的贡献
 - **产品设计**：需求定义，策略优先级，UI 交互设计
 - **测试反馈**：全流程测试，页面结构分析，bug 定位
-- **外部协作**：邀请社区专家协助解决 layui 多选和 DeepSeek 推理 token 问题
 
 ### Claude (AI Assistant) 的贡献
 - **架构设计**：Flask + Playwright + 轮询架构，工作线程管理
