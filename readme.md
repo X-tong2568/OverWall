@@ -100,20 +100,6 @@ python main.py
 - **代码实现**：`start_browser()` 重连、`_status_snapshot` 状态同步、三层无头拦截
 - **文档更新**：记忆库新增 1 条，README v1.2 章节
 
-- PyInstaller 打包为独立 exe：`dist/OverWall_Win11.exe`，免安装 Python 环境
-- 圆角图标：6 尺寸（16~256px），四角透明无白底
-- 系统兼容性说明：Win10/11 开箱即用，Win7/8 不再支持
-- 添加 `OverWall.spec` 打包配置文件
-
-### XTong 的贡献
-- **兼容性测试**：Win7 老电脑实测，发现 API Set DLL 缺失问题
-- **图标优化**：指出四角直角白底问题，提出圆角需求
-
-### Claude (AI Assistant) 的贡献
-- **打包构建**：PyInstaller 配置 + 多 Python 版本兼容调试（3.8/3.9/3.13）
-- **图标处理**：Pillow 圆角遮罩 + 多尺寸 ICO 生成
-- **文档更新**：兼容性说明 + 版本演进
-
 ## v1.0 更新
 
 - 登录自动化（账号密码 + 加密存储）
