@@ -1,3 +1,6 @@
+# 打包产物（通过 Releases 分发）
+dist/
+
 # 敏感配置（含加密后的账号密码、API Key）
 config.json
 
