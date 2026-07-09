@@ -41,6 +41,7 @@ _status_snapshot: dict = {
     "session_points": 0, "session_articles": 0,
     "session_videos": 0, "session_exercise_correct": 0,
     "session_exercise_wrong": 0, "question_bank_total": 0,
+    "username": "",
 }
 
 
@@ -172,7 +173,8 @@ def _submit_task(coro_factory, module_name: str):
 @app.route("/api/login", methods=["POST"])
 def api_login():
     global _executor, _logged_in, _worker_loop
-    if _executor is not None:
+    # 已登录且 executor 存活 → 拒绝；stop 后 executor 可能残留但 _logged_in 已置 False → 允许
+    if _executor is not None and _logged_in:
         return jsonify({"code": 400, "msg": "已登录，请先注销"})
 
     cfg = load_config()
@@ -192,8 +194,10 @@ def api_login():
         if ok:
             _logged_in = True
             _status_snapshot["logged_in"] = True
+            _status_snapshot["username"] = cfg.get("username", "")
             pts = await _executor.get_weekly_points()
             _status_snapshot["weekly_points"] = pts
+            _status_snapshot["question_bank_total"] = bank_stats()["total"]
             _add_log("info", f"登录成功！当前周积分: {pts}")
         else:
             _add_log("error", "登录失败")
@@ -212,6 +216,7 @@ def api_logout():
         _executor = None
     _logged_in = False
     _status_snapshot["logged_in"] = False
+    _status_snapshot["username"] = ""
     _status_snapshot["running"] = False
     _add_log("info", "已注销")
     return jsonify({"code": 200, "msg": "已注销"})
@@ -263,19 +268,26 @@ def api_stop():
         _executor.running = False
     _status_snapshot["running"] = False
     _status_snapshot["paused"] = False
+    _logged_in = False
+    _status_snapshot["logged_in"] = False
 
-    # 关闭浏览器
-    async def _close():
+    # 在 worker 线程关闭浏览器 + 清理 executor（避免 Flask 线程直接置 None 导致竞态）
+    async def _cleanup():
+        global _executor
         if _executor:
-            await _executor.stop_browser()
+            try:
+                await _executor.stop_browser()
+            except Exception:
+                pass
+            _executor = None
 
     if _worker_loop and not _worker_loop.is_closed():
         import asyncio as _asyncio
-        _asyncio.run_coroutine_threadsafe(_close(), _worker_loop)
-    _executor = None
-    _logged_in = False
-    _status_snapshot["logged_in"] = False
-    _add_log("info", "已停止，浏览器已关闭")
+        _asyncio.run_coroutine_threadsafe(_cleanup(), _worker_loop)
+    else:
+        _executor = None
+
+    _add_log("info", "已停止")
     return jsonify({"code": 200, "msg": "已停止"})
 
 # ---- 获取考试列表 ----
@@ -308,19 +320,35 @@ def api_run_module(module: str):
     async def _do():
         _executor.running = True
         try:
+            # 确保浏览器连接有效（手动模块login和执行分两次任务，headless下可能断开）
+            page = await _executor.start_browser()
+            if not page:
+                _add_log("error", "浏览器未连接，请重新登录")
+                return
+            # 无头模式下模拟考试不可用（需可视化交互确认签名）
+            if module == "mock_exam" and cfg.get("headless"):
+                _add_log("warn", "无头模式下模拟考试不可用，请关闭无头模式后重试")
+                return
             if module == "exercise":
                 res = await _executor.do_exercises(api_key)
                 _add_log("info", f"每日练习: 对{res['correct']} 得{res['points']}分")
+                _status_snapshot["session_exercise_correct"] += res.get("correct", 0)
+                _status_snapshot["session_exercise_wrong"] += res.get("wrong", 0)
+                _status_snapshot["session_points"] += res.get("points", 0)
             elif module == "mock_exam":
                 res = await _executor.do_mock_exam(api_key, exam_index or 0)
                 _add_log("info", f"模拟考试: {res['correct']}/{res['total']}")
             elif module == "article":
                 res = await _executor.study_articles(5)
                 _add_log("info", f"图文: +{res}分")
+                _status_snapshot["session_articles"] += res
+                _status_snapshot["session_points"] += res
             elif module == "video":
                 res = await _executor.study_videos(tab=2, count=3)
                 res2 = await _executor.study_videos(tab=4, count=3) if res < 3 else 0
                 _add_log("info", f"视频: +{res+res2}分")
+                _status_snapshot["session_videos"] += (res + res2)
+                _status_snapshot["session_points"] += (res + res2)
         except Exception as e:
             _add_log("error", f"执行异常: {e}")
         # 检查 executor 是否被 stop 清除了
@@ -349,6 +377,7 @@ def api_bank_export():
 def api_bank_clear():
     """清空题库"""
     save_bank({"version": "1.0", "questions": {}})
+    _status_snapshot["question_bank_total"] = 0
     _add_log("info", "题库已清空")
     return jsonify({"code": 200, "msg": "题库已清空"})
 
@@ -365,6 +394,7 @@ def api_bank_import():
             current["questions"][key] = value
             new_count += 1
     save_bank(current)
+    _status_snapshot["question_bank_total"] = bank_stats()["total"]
     return jsonify({"code": 200, "msg": f"导入成功，新增 {new_count} 题"})
 
 

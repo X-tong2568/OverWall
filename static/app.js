@@ -65,6 +65,15 @@
     if (data.session_videos !== undefined) $("#statVideos").textContent = data.session_videos;
     if (data.session_exercise_correct !== undefined) $("#statCorrect").textContent = data.session_exercise_correct;
     if (data.question_bank_total !== undefined) { $("#statBank").textContent = data.question_bank_total; $("#bankCount").textContent = data.question_bank_total; }
+    // 更新右栏状态卡片
+    if (data.weekly_points !== undefined && data.weekly_target !== undefined) {
+      $("#statusWeekly").textContent = data.weekly_points + " / " + data.weekly_target;
+    }
+    if (data.logged_in) {
+      $("#statusAccount").textContent = data.username || "已登录";
+    } else {
+      $("#statusAccount").textContent = "未登录";
+    }
     updateUI(data.logged_in || data.running, data.running, data.paused);
   }
 
@@ -85,18 +94,26 @@
       domStatusDot.classList.add("running"); domStatusText.textContent = "运行中";
       domBtnStart.classList.add("hidden"); domBtnPause.classList.remove("hidden"); domBtnStop.classList.remove("hidden");
       domBtnPause.textContent = "⏸ 暂停"; domFooterStatus.textContent = "引擎运行中";
+      $("#statusEngine").textContent = "运行中";
     } else if (running && paused) {
       domStatusDot.classList.add("paused"); domStatusText.textContent = "已暂停";
       domBtnPause.textContent = "▶ 继续"; domFooterStatus.textContent = "引擎已暂停";
+      $("#statusEngine").textContent = "已暂停";
     } else {
       domStatusDot.classList.add("stopped"); domStatusText.textContent = "待机中";
       domBtnStart.classList.remove("hidden"); domBtnPause.classList.add("hidden"); domBtnStop.classList.add("hidden");
       domFooterStatus.textContent = loggedIn ? "就绪" : "请先登录";
+      $("#statusEngine").textContent = "待机中";
     }
   }
 
   // ===== 按钮 =====
-  domBtnLogin.addEventListener("click", function(){fetch("/api/login",{method:"POST"});lastLogTime="";seenKeys.clear();});
+  domBtnLogin.addEventListener("click", function(){
+    fetch("/api/login",{method:"POST"}).then(function(r){return r.json();}).then(function(resp){
+      if (resp.code !== 200) addLog("--:--:--","warn",resp.msg||"登录失败");
+    });
+    lastLogTime="";seenKeys.clear();
+  });
   domBtnLogout.addEventListener("click", function(){fetch("/api/stop",{method:"POST"});fetch("/api/logout",{method:"POST"});});
   domBtnStart.addEventListener("click", function(){fetch("/api/start",{method:"POST"});lastLogTime="";seenKeys.clear();});
   domBtnPause.addEventListener("click", function(){fetch("/api/pause",{method:"POST"});});
@@ -104,6 +121,29 @@
   $("#clearLogBtn").addEventListener("click", function(){domLogContainer.innerHTML='<div class="log-placeholder">日志已清空...</div>';logCount=0;seenKeys.clear();});
 
   // ===== 模块按钮 =====
+  function updateMockExamButton() {
+    var headless = $("#cfgHeadless") && $("#cfgHeadless").checked;
+    var btn = $("#btnMockExam");
+    if (!btn) return;
+    if (headless) {
+      btn.disabled = true;
+      btn.style.opacity = "0.4";
+      btn.style.cursor = "not-allowed";
+      btn.title = "无头模式下模拟考试不可用（需可视化交互）";
+    } else {
+      btn.disabled = false;
+      btn.style.opacity = "1";
+      btn.style.cursor = "pointer";
+      btn.title = "";
+    }
+  }
+
+  // 无头模式切换时同步更新模拟考试按钮状态
+  var cfgHeadlessEl = $("#cfgHeadless");
+  if (cfgHeadlessEl) {
+    cfgHeadlessEl.addEventListener("change", updateMockExamButton);
+  }
+
   $$(".btn-module").forEach(function(btn){
     btn.addEventListener("click", function(){
       if (engineRunning) { addLog("--:--:--","warn","任务执行中"); return; }
@@ -141,6 +181,9 @@
   $("#btnSettings").addEventListener("click", function(){$("#settingsOverlay").classList.remove("hidden");loadSettings();});
   $("#closeSettings").addEventListener("click", function(){$("#settingsOverlay").classList.add("hidden");});
   $("#saveSettingsBtn").addEventListener("click", function(){saveSettings();$("#settingsOverlay").classList.add("hidden");});
+  $("#btnAbout").addEventListener("click", function(e){e.stopPropagation();$("#aboutOverlay").classList.remove("hidden");});
+  $("#closeAbout").addEventListener("click", function(){$("#aboutOverlay").classList.add("hidden");});
+  $("#aboutOverlay").addEventListener("click", function(e){if(e.target===this)$("#aboutOverlay").classList.add("hidden");});
   $("#resetSettingsBtn").addEventListener("click", function(){
     if (!confirm("确定恢复默认？")) return;
     fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({strategy_order:["article","video","exercise"],weekly_target:30,headless:false,theme:themePresets.porcelain})}).then(function(){loadSettings();applyTheme(themePresets.porcelain);});
@@ -153,6 +196,7 @@
       $("#cfgApiKey").value=c.deepseek_api_key||"";$("#cfgApiBase").value=c.deepseek_base_url||"https://api.deepseek.com";
       $("#cfgModel").value=c.deepseek_model||"deepseek-chat";$("#cfgTarget").value=c.weekly_target||30;
       $("#cfgHeadless").checked=c.headless||false;
+      updateMockExamButton();
       // 按配置的策略顺序重排 UI
       var order=c.strategy_order||["article","video","exercise"];
       var ct=$("#strategyOrder");if(ct){
