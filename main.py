@@ -420,15 +420,13 @@ if __name__ == "__main__":
     import webbrowser
     webbrowser.open(f"http://127.0.0.1:{port}")
 
-    # 检查 Playwright 浏览器
-    try:
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            pass
-    except Exception:
-        print("[!] 正在安装 Chromium...")
-        os.system(f'"{sys.executable}" -m playwright install chromium')
-        print("[OK] Chromium 安装完成")
+    # 预检查 Playwright 浏览器（缺失则自动下载，避免登录时才下载等待太久）
+    from executor import _ensure_playwright_browsers
+    print("[*] 检查浏览器组件...")
+    if _ensure_playwright_browsers(print):
+        print("[OK] 浏览器组件就绪")
+    else:
+        print("[!] 浏览器组件下载失败，将尝试使用系统 Chrome/Edge")
 
     # Flask 内置服务器
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)

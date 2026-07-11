@@ -1,6 +1,6 @@
 # OverWall - 你有张良计 我有过墙梯
 
-> v1.2 — 某企业安全积分自动化脚本
+> v1.3 — 某企业安全积分自动化脚本
 
 ## 功能
 
@@ -36,9 +36,10 @@
 
 ### 方式二：源码运行
 
+源码运行无需手动安装浏览器，首次使用会自动下载 Chromium 到系统缓存目录：
+
 ```bash
 pip install -r requirements.txt
-python -m playwright install chromium
 python main.py
 ```
 
@@ -53,6 +54,7 @@ python main.py
 | `question_bank.py` | 题库管理，MD5 匹配，置信度系统 |
 | `config.py` | 配置加解密读写 |
 | `crypto_utils.py` | 敏感字段 XOR 加密 |
+| `build.bat` | PyInstaller 一键打包脚本 |
 | `templates/index.html` | Web UI |
 | `static/styles.css` | 样式（亮色主题，CSS 变量驱动） |
 | `static/app.js` | 前端逻辑 |
@@ -73,9 +75,29 @@ python main.py
 
 | 版本 | 日期 | 主要变更 |
 |------|------|---------|
+| v1.3 | 2026-07-11 | Edge 浏览器回退 + 自动下载 Chromium + 打包依赖修复 |
 | v1.2 | 2026-07-09 | 双栏仪表盘 UI 重构 + 无头模式修复 + 手动模块状态同步 + 关于弹窗 |
 | v1.1 | 2026-07-09 | Win10/11 exe 打包 + 圆角图标 + 系统兼容性说明 |
 | v1.0 | 2026-07-09 | 首版发布：每日练习/图文/视频/模拟考试 + AI答题 + 题库系统 |
+
+## v1.3 更新
+
+- **浏览器多通道回退**：启动顺序 系统 Chrome → 系统 Edge → 自带 Chromium，Win10/11 自带 Edge 开箱即用
+- **自动下载 Chromium**：无可用浏览器时自动从 Playwright CDN 下载（约 145MB），存到 exe 同目录持久化，仅首次需要
+- **无头模式全支持**：Chrome / Edge / Chromium 均支持无头运行
+- **打包依赖修复**：添加 playwright hidden imports，内置 PyInstaller hook 正确收集 driver 文件
+- **启动预检查**：程序启动时提前检查/下载浏览器，避免登录时才等待
+- **构建脚本**：`build.bat` 一键安装依赖 + 打包
+
+### XTong 的贡献
+- **问题发现**：反馈打包 exe 缺少 Playwright 浏览器导致无法运行
+- **方案决策**：选择 Edge 回退 + 自动下载方案，不把 332MB Chromium 打进 exe
+- **功能确认**：确认 Edge 无头模式可接受，验证自动下载流程
+
+### Claude (AI Assistant) 的贡献
+- **代码实现**：executor.py 多通道回退 + `_ensure_playwright_browsers()` 自动下载函数
+- **打包修复**：OverWall.spec hidden imports + build.bat 构建脚本
+- **文档更新**：README v1.3 章节，模板版本号同步
 
 ## v1.2 更新
 

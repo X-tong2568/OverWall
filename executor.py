@@ -7,6 +7,8 @@ import os
 import re
 import sys
 import time
+import zipfile
+import io
 from playwright.async_api import async_playwright, Page, Browser
 
 from question_bank import lookup_question, record_answer
@@ -17,6 +19,89 @@ if getattr(sys, 'frozen', False):
     _BASE_DIR = os.path.dirname(sys.executable)
 else:
     _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Playwright 浏览器版本（与 playwright 1.52 匹配）
+_CHROMIUM_REVISION = "1169"
+_FFMPEG_REVISION = "1011"
+
+
+def _ensure_playwright_browsers(log_fn=None) -> bool:
+    """
+    确保 Playwright Chromium 浏览器可用
+    对 PyInstaller 打包环境：存到 exe 同目录/playwright-browsers，持久化只需下载一次
+    对开发环境：使用系统默认缓存目录
+    返回 True 表示浏览器已就绪
+    """
+    log = log_fn or (lambda msg: None)
+
+    # 确定浏览器存放目录
+    if getattr(sys, 'frozen', False):
+        browsers_root = os.path.join(os.path.dirname(sys.executable), 'playwright-browsers')
+    else:
+        browsers_root = None  # 开发环境用 playwright 默认缓存
+
+    # 设置环境变量，告诉 playwright 浏览器位置
+    if browsers_root:
+        os.environ['PLAYWRIGHT_BROWSERS_PATH'] = browsers_root
+
+    # 检查 chromium 是否已存在
+    cache_dir = browsers_root or os.path.join(os.environ.get('LOCALAPPDATA', ''), 'ms-playwright')
+    chromium_exe = os.path.join(cache_dir, f'chromium-{_CHROMIUM_REVISION}', 'chrome-win', 'chrome.exe')
+
+    if os.path.exists(chromium_exe):
+        return True
+
+    # 需要下载浏览器
+    log("正在下载 Chromium 浏览器（首次运行需约 145MB，请耐心等待）...")
+    try:
+        import requests as _requests
+
+        # 下载 chromium
+        chromium_url = (
+            f"https://cdn.playwright.dev/dbazure/download/playwright/builds/"
+            f"chromium/{_CHROMIUM_REVISION}/chromium-win64.zip"
+        )
+        log(f"下载 Chromium v{_CHROMIUM_REVISION}...")
+        resp = _requests.get(chromium_url, timeout=600, stream=True)
+        resp.raise_for_status()
+
+        # 流式下载 + 解压
+        total_size = int(resp.headers.get('content-length', 0))
+        downloaded = 0
+        chunks = []
+        for chunk in resp.iter_content(chunk_size=8192):
+            chunks.append(chunk)
+            downloaded += len(chunk)
+            if total_size and downloaded % (total_size // 10 + 1) < 8192:
+                pct = downloaded * 100 // total_size
+                log(f"  Chromium 下载进度: {pct}%")
+
+        log("正在解压 Chromium...")
+        with zipfile.ZipFile(io.BytesIO(b''.join(chunks))) as zf:
+            extract_dir = os.path.join(cache_dir, f'chromium-{_CHROMIUM_REVISION}')
+            os.makedirs(extract_dir, exist_ok=True)
+            zf.extractall(extract_dir)
+        log("Chromium 安装完成")
+
+        # 下载 ffmpeg（视频播放需要）
+        ffmpeg_dir = os.path.join(cache_dir, f'ffmpeg-{_FFMPEG_REVISION}')
+        if not os.path.exists(ffmpeg_dir):
+            ffmpeg_url = (
+                f"https://cdn.playwright.dev/dbazure/download/playwright/builds/"
+                f"ffmpeg/{_FFMPEG_REVISION}/ffmpeg-win64.zip"
+            )
+            log("下载 ffmpeg 编解码器...")
+            resp = _requests.get(ffmpeg_url, timeout=120)
+            resp.raise_for_status()
+            with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+                os.makedirs(ffmpeg_dir, exist_ok=True)
+                zf.extractall(ffmpeg_dir)
+            log("ffmpeg 安装完成")
+
+        return True
+    except Exception as e:
+        log(f"浏览器下载失败: {e}")
+        return False
 
 
 class TaskExecutor:
@@ -42,7 +127,7 @@ class TaskExecutor:
 
     # ---- 浏览器生命周期 ----
     async def start_browser(self) -> Page | None:
-        """启动浏览器（支持视频编码）"""
+        """启动浏览器，按优先级尝试：系统 Chrome → 系统 Edge → 自带 Chromium"""
         try:
             if self.browser and self.browser.is_connected():
                 if not self.page or getattr(self.page, '_closed', True):
@@ -60,9 +145,9 @@ class TaskExecutor:
                 return self.page
 
             p = await async_playwright().start()
-            # 优先用系统 Chrome（支持 H.264 视频），没有则用自带 Chromium
+            headless = self.cfg.get("headless", False)
             launch_opts = {
-                "headless": self.cfg.get("headless", False),
+                "headless": headless,
                 "slow_mo": self.cfg.get("browser_slow_mo", 300),
                 "args": [
                     "--disable-blink-features=AutomationControlled",
@@ -70,12 +155,43 @@ class TaskExecutor:
                     "--mute-audio",
                 ],
             }
-            try:
-                self.browser = await p.chromium.launch(channel="chrome", **launch_opts)
-                await self._info("使用系统 Chrome 浏览器")
-            except Exception:
-                self.browser = await p.chromium.launch(**launch_opts)
-                await self._info("使用自带 Chromium（视频可能无法播放，但计时仍有效）")
+
+            # 按优先级尝试浏览器通道
+            channels = [
+                ("chrome", "系统 Chrome（视频支持最佳）"),
+                ("msedge", "系统 Edge"),
+            ]
+            launched = False
+            for channel, label in channels:
+                try:
+                    self.browser = await p.chromium.launch(channel=channel, **launch_opts)
+                    await self._info(f"使用 {label}")
+                    launched = True
+                    break
+                except Exception:
+                    continue
+
+            # 回退：使用 Playwright 自带 Chromium
+            if not launched:
+                try:
+                    self.browser = await p.chromium.launch(**launch_opts)
+                    await self._info("使用自带 Chromium（视频可能无法播放，但计时仍有效）")
+                    launched = True
+                except Exception:
+                    # 浏览器未安装，尝试自动下载
+                    await self._warn("未找到可用浏览器，正在自动下载 Chromium...")
+                    if _ensure_playwright_browsers(lambda msg: asyncio.ensure_future(self._info(msg))):
+                        try:
+                            self.browser = await p.chromium.launch(**launch_opts)
+                            await self._info("使用自带 Chromium（已自动安装）")
+                            launched = True
+                        except Exception as e2:
+                            await self._error(f"Chromium 启动失败: {e2}")
+                            return None
+                    else:
+                        await self._error("浏览器自动下载失败，请手动安装 Chrome 或 Edge")
+                        return None
+
             context = await self.browser.new_context(viewport={"width": 1366, "height": 768})
             self.page = await context.new_page()
             return self.page
