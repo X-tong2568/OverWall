@@ -89,11 +89,6 @@ python main.py
 - **启动预检查**：程序启动时提前检查/下载浏览器，避免登录时才等待
 - **构建脚本**：`build.bat` 一键安装依赖 + 打包
 
-### XTong 的贡献
-- **问题发现**：反馈打包 exe 缺少 Playwright 浏览器导致无法运行
-- **方案决策**：选择 Edge 回退 + 自动下载方案，不把 332MB Chromium 打进 exe
-- **功能确认**：确认 Edge 无头模式可接受，验证自动下载流程
-
 ### Claude (AI Assistant) 的贡献
 - **代码实现**：executor.py 多通道回退 + `_ensure_playwright_browsers()` 自动下载函数
 - **打包修复**：OverWall.spec hidden imports + build.bat 构建脚本
