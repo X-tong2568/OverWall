@@ -169,10 +169,10 @@ class TaskExecutor:
                 ],
             }
 
-            # 按优先级尝试浏览器通道
+            # 按优先级尝试浏览器通道（Edge 优先，Win10/11 自带且更稳定）
             channels = [
-                ("chrome", "系统 Chrome（视频支持最佳）"),
                 ("msedge", "系统 Edge"),
+                ("chrome", "系统 Chrome"),
             ]
             launched = False
             for channel, label in channels:
