@@ -28,30 +28,43 @@ _FFMPEG_REVISION = "1011"
 def _ensure_playwright_browsers(log_fn=None) -> bool:
     """
     确保 Playwright Chromium 浏览器可用
-    对 PyInstaller 打包环境：存到 exe 同目录/playwright-browsers，持久化只需下载一次
-    对开发环境：使用系统默认缓存目录
+    查找优先级：
+      1. exe 同目录/playwright-browsers（打包环境持久化目录）
+      2. 系统全局 %LOCALAPPDATA%/ms-playwright（开发环境/全局安装）
+      3. 都没有 → 自动下载到 exe 同目录
     返回 True 表示浏览器已就绪
     """
     log = log_fn or (lambda msg: None)
 
-    # 确定浏览器存放目录
     if getattr(sys, 'frozen', False):
-        browsers_root = os.path.join(os.path.dirname(sys.executable), 'playwright-browsers')
+        local_root = os.path.join(os.path.dirname(sys.executable), 'playwright-browsers')
     else:
-        browsers_root = None  # 开发环境用 playwright 默认缓存
+        local_root = None
 
-    # 设置环境变量，告诉 playwright 浏览器位置
-    if browsers_root:
-        os.environ['PLAYWRIGHT_BROWSERS_PATH'] = browsers_root
+    # 候选目录列表：先本地后全局
+    global_cache = os.path.join(os.environ.get('LOCALAPPDATA', ''), 'ms-playwright')
+    candidates = []
+    if local_root:
+        candidates.append(local_root)
+    candidates.append(global_cache)
 
-    # 检查 chromium 是否已存在
-    cache_dir = browsers_root or os.path.join(os.environ.get('LOCALAPPDATA', ''), 'ms-playwright')
-    chromium_exe = os.path.join(cache_dir, f'chromium-{_CHROMIUM_REVISION}', 'chrome-win', 'chrome.exe')
+    chromium_exe = None
+    found_dir = None
+    for d in candidates:
+        exe_path = os.path.join(d, f'chromium-{_CHROMIUM_REVISION}', 'chrome-win', 'chrome.exe')
+        if os.path.exists(exe_path):
+            chromium_exe = exe_path
+            found_dir = d
+            break
 
-    if os.path.exists(chromium_exe):
+    if chromium_exe:
+        # 告知 playwright 浏览器位置
+        os.environ['PLAYWRIGHT_BROWSERS_PATH'] = found_dir
         return True
 
-    # 需要下载浏览器
+    # 没找到 → 下载到本地持久化目录（无本地目录则用全局缓存）
+    download_dir = local_root or global_cache
+    os.environ['PLAYWRIGHT_BROWSERS_PATH'] = download_dir
     log("正在下载 Chromium 浏览器（首次运行需约 145MB，请耐心等待）...")
     try:
         import requests as _requests
@@ -78,13 +91,13 @@ def _ensure_playwright_browsers(log_fn=None) -> bool:
 
         log("正在解压 Chromium...")
         with zipfile.ZipFile(io.BytesIO(b''.join(chunks))) as zf:
-            extract_dir = os.path.join(cache_dir, f'chromium-{_CHROMIUM_REVISION}')
+            extract_dir = os.path.join(download_dir, f'chromium-{_CHROMIUM_REVISION}')
             os.makedirs(extract_dir, exist_ok=True)
             zf.extractall(extract_dir)
         log("Chromium 安装完成")
 
         # 下载 ffmpeg（视频播放需要）
-        ffmpeg_dir = os.path.join(cache_dir, f'ffmpeg-{_FFMPEG_REVISION}')
+        ffmpeg_dir = os.path.join(download_dir, f'ffmpeg-{_FFMPEG_REVISION}')
         if not os.path.exists(ffmpeg_dir):
             ffmpeg_url = (
                 f"https://cdn.playwright.dev/dbazure/download/playwright/builds/"
