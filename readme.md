@@ -82,7 +82,7 @@ python main.py
 
 ## v1.3 更新
 
-- **浏览器多通道回退**：启动顺序 系统 Chrome → 系统 Edge → 自带 Chromium，Win10/11 自带 Edge 开箱即用
+- **浏览器多通道回退**：启动顺序 系统 Edge → 系统 Chrome → 自带 Chromium，Win10/11 自带 Edge 开箱即用
 - **自动下载 Chromium**：无可用浏览器时自动从 Playwright CDN 下载（约 145MB），存到 exe 同目录持久化，仅首次需要
 - **无头模式全支持**：Chrome / Edge / Chromium 均支持无头运行
 - **打包依赖修复**：添加 playwright hidden imports，内置 PyInstaller hook 正确收集 driver 文件
