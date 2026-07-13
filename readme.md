@@ -93,7 +93,6 @@ python main.py
 ### Claude (AI Assistant) 的贡献
 - **代码实现**：`_click_article_card` is-learned 过滤、`study_videos` 重构 + `_do_study_loop` + `_click_subtab`、`study_articles` 推荐回退专业课程
 - **配置系统**：`jituan_priority` 配置项 + 设置UI + 加载/保存/重置
-- **文档更新**：README v1.4 章节，版本号同步
 
 ## v1.3 更新
 
