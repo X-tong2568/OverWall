@@ -429,40 +429,42 @@ class TaskExecutor:
 
     # ---- 刷图文 ----
     async def study_articles(self, count: int = 5) -> int:
-        """刷图文学习：从积分页进入推荐"""
+        """刷图文学习：从积分页进入推荐，推荐刷完自动回退专业课程(图文)"""
         points = 0
         await self._info("→ 图文: 推荐页")
 
         # 从积分页进入
-        if not await self._goto_study_from_score("推荐"):
-            await self._warn("图文: 无法从积分页进入")
-            return 0
+        if await self._goto_study_from_score("推荐"):
+            await self._dump_page("article")
+            seen = set()
+            for i in range(count):
+                if not self._running:
+                    break
+                await self._info(f"图文 [{i+1}/{count}]: 点击文章卡片...")
+                clicked = await self._click_article_card(seen)
+                if not clicked:
+                    await self._warn("图文: 未找到可点击的文章")
+                    break
+                await self._wait_content()
+                await self._info("  等待学习倒计时...")
+                done = await self._wait_study_done()
+                if not self._running:
+                    break
+                if done:
+                    points += 1
+                    await self._info(f"  ✓ 图文完成 +1 (累计{points})")
+                else:
+                    await self._warn("  等待超时")
+                if not self._running:
+                    break
+                if not await self._goto_study_from_score("推荐"):
+                    break
 
-        await self._dump_page("article")
-
-        seen = set()
-        for i in range(count):
-            if not self._running:
-                break
-            await self._info(f"图文 [{i+1}/{count}]: 点击文章卡片...")
-            clicked = await self._click_article_card(seen)
-            if not clicked:
-                await self._warn("图文: 未找到可点击的文章")
-                break
-            await self._wait_content()
-            await self._info("  等待学习倒计时...")
-            done = await self._wait_study_done()
-            if not self._running:
-                break
-            if done:
-                points += 1
-                await self._info(f"  ✓ 图文完成 +1 (累计{points})")
-            else:
-                await self._warn("  等待超时")
-            if not self._running:
-                break
-            if not await self._goto_study_from_score("推荐"):
-                break
+        # 推荐全部已学习 → 回退到集团课程-专业课程(图文)
+        if points == 0 and self._running:
+            await self._info("→ 推荐页无可读，回退到集团课程-专业课程(图文)")
+            points += await self._do_study_loop("集团课程", "专业课程", count,
+                                                 click_play=False)
 
         await self._info(f"图文结束: +{points}分")
         return points
@@ -478,6 +480,7 @@ class TaskExecutor:
                 first_unseen = await self.page.evaluate("""(seen) => {
                     const cards = document.querySelectorAll('li.course-card--hero, li.course-card--list, li.course-card--text, li.course-item');
                     for (const card of cards) {
+                        if (card.classList.contains('is-learned')) continue;  // 跳过已学习
                         const titleEl = card.querySelector('[class*="title"], [class*="_name"]') || card;
                         const title = (titleEl.innerText || '').trim();
                         if (title && !seen.includes(title)) return title;
@@ -508,8 +511,9 @@ class TaskExecutor:
             cards_info = await self.page.evaluate("""() => {
                 const cards = document.querySelectorAll('li.course-card--hero, li.course-card--list, li.course-card--text, li.course-item');
                 return Array.from(cards).map((card, i) => {
+                    const isLearned = card.classList.contains('is-learned');
                     const titleEl = card.querySelector('[class*="title"], [class*="_name"]') || card;
-                    return {index: i, title: (titleEl.innerText || titleEl.textContent || '').trim()};
+                    return {index: i, title: (titleEl.innerText || titleEl.textContent || '').trim(), isLearned: isLearned};
                 });
             }""")
 
@@ -519,6 +523,8 @@ class TaskExecutor:
 
             # 找第一个没看过的
             for ci in cards_info:
+                if ci.get("isLearned"):
+                    continue  # 跳过已学习
                 if ci["title"] and ci["title"] not in seen_titles:
                     # 用 Playwright locator 点击（比 JS click 可靠）
                     card = self.page.locator('li.course-card--hero, li.course-card--list, li.course-card--text, li.course-item').nth(ci["index"])
@@ -538,45 +544,89 @@ class TaskExecutor:
 
     # ---- 刷视频 ----
     async def study_videos(self, tab: int = 2, count: int = 5) -> int:
-        """刷视频学习：从积分页进入集团课程或案例学习"""
+        """刷视频学习：从积分页进入集团课程或案例学习
+        集团课程下按 jituan_priority 配置决定先刷专业课程(图文)还是视频课程"""
         points = 0
         tab_name = {2: "集团课程", 4: "案例学习"}.get(tab, f"tab{tab}")
 
-        await self._info(f"→ 视频({tab_name})")
+        if tab == 2:
+            # 集团课程：按配置优先级刷子 tab
+            priority = self.cfg.get("jituan_priority", ["article", "video"])
+            for subtab in priority:
+                if not self._running:
+                    break
+                is_video = subtab == "video"
+                subtab_name = "视频课程" if is_video else "专业课程"
+                points += await self._do_study_loop(tab_name, subtab_name, count,
+                                                     click_play=is_video)
+        else:
+            points += await self._do_study_loop(tab_name, None, count, click_play=True)
 
-        if not await self._goto_study_from_score(tab_name):
-            await self._warn(f"视频({tab_name}): 无法从积分页进入")
+        await self._info(f"视频({tab_name})结束: +{points}分")
+        return points
+
+    async def _do_study_loop(self, score_tab: str, subtab: str | None,
+                              count: int, click_play: bool) -> int:
+        """通用刷课循环：积分页进入 -> 可选切子tab -> 点卡片 -> [播放] -> 等倒计时"""
+        points = 0
+        label = subtab if subtab else score_tab
+        await self._info(f"→ {label}")
+
+        if not await self._goto_study_from_score(score_tab):
+            await self._warn(f"{label}: 无法从积分页进入")
             return 0
 
-        await self._dump_page(f"video{tab}")
+        # 切子 tab（如「专业课程」「视频课程」）
+        if subtab:
+            await self._click_subtab(subtab)
 
-        seen = set()  # 去重
+        await self._dump_page(f"study_{label}")
+        seen = set()
         for i in range(count):
             if not self._running:
                 break
-            await self._info(f"视频 [{i+1}/{count}]: 点击视频卡片...")
+            await self._info(f"{label} [{i+1}/{count}]: 点击卡片...")
             clicked = await self._click_article_card(seen)
             if not clicked:
-                await self._warn(f"视频({tab_name}): 未找到可点击的视频")
+                await self._warn(f"{label}: 未找到可点击的课程")
                 break
             await self._wait_content()
-            await self._click_play()
+            if click_play:
+                await self._click_play()
             await self._info("  等待学习倒计时...")
             done = await self._wait_study_done()
             if not self._running:
                 break
             if done:
                 points += 1
-                await self._info(f"  ✓ 视频完成 +1 (累计{points})")
+                await self._info(f"  ✓ 完成 +1 (累计{points})")
             else:
                 await self._warn("  等待超时")
             if not self._running:
                 break
-            if not await self._goto_study_from_score(tab_name):
+            # 回到积分页重新进入（确保页面状态干净）
+            if not await self._goto_study_from_score(score_tab):
                 break
+            if subtab:
+                await self._click_subtab(subtab)
 
-        await self._info(f"视频({tab_name})结束: +{points}分")
+        await self._info(f"{label}结束: +{points}分")
         return points
+
+    async def _click_subtab(self, subtab_name: str):
+        """在集团课程页面点击二级导航（视频课程/专业课程）"""
+        await self._info(f"  切换到: {subtab_name}")
+        for sel in [
+            f'.study-cats__item:has-text("{subtab_name}")',
+            f'span:has-text("{subtab_name}")',
+            f'div:has-text("{subtab_name}")',
+        ]:
+            el = self.page.locator(sel).first
+            if await el.count() > 0 and await el.is_visible():
+                await el.click()
+                await asyncio.sleep(1.5)
+                return
+        await self._warn(f"  未找到子tab: {subtab_name}")
 
     async def _click_study_btn(self) -> bool:
         """在当前页找'去学习'按钮并点击"""

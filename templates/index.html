@@ -114,7 +114,7 @@
     <footer class="footer">
       <span id="footerStatus">就绪</span>
       <span class="footer-disclaimer">仅供个人学习研究使用，请遵守目标平台协议。开发者不承担任何使用风险。</span>
-      <span class="footer-version">v1.3 &middot; <span id="btnAbout" class="about-link">关于</span></span>
+      <span class="footer-version">v1.4 &middot; <span id="btnAbout" class="about-link">关于</span></span>
     </footer>
   </main>
 
@@ -127,9 +127,10 @@
       </div>
       <div class="about-dialog-body">
         <h4>版本</h4>
-        <p>OverWall v1.3 — 你有张良计，我有过墙梯</p>
+        <p>OverWall v1.4 — 你有张良计，我有过墙梯</p>
         <h4>功能说明</h4>
-        <p>OverWall 是一款学习平台辅助工具，用于自动化完成图文学习、视频学习、每日练习和模拟考试等任务，帮助用户高效获取学习积分。</p>
+        <p>OverWall 是一款学习平台辅助工具，用于自动化完成图文学习、视频学习、每日练习和模拟考试等任务。</p>
+        <p>v1.4 新增：推荐页已学习文章自动跳过、集团课程支持专业课程(图文)子tab、子tab优先级可配置。</p>
         <h4>免责声明</h4>
         <p>本软件仅供个人学习研究使用。使用者应自行承担使用本软件的一切风险和责任。开发者不对因使用本软件而导致的任何直接或间接损失负责，包括但不限于：账号异常、数据丢失、平台封禁等。</p>
         <p>严禁将本软件用于任何违法用途。请遵守目标平台的使用协议和相关法律法规。</p>
@@ -179,6 +180,10 @@
               <div class="strategy-item" draggable="true" data-type="exercise">每日练习（答题，日限3分）</div>
               <div class="strategy-item" draggable="true" data-type="mock_exam">模拟考试（答题，不限次）</div>
             </div>
+            <label style="margin-top:12px">集团课程优先 <select id="cfgJituanPriority">
+              <option value="article,video">专业课程(图文)优先</option>
+              <option value="video,article">视频课程优先</option>
+            </select></label>
           </div>
           <div class="setting-card">
             <h3 class="setting-card-title">主题配色</h3>
