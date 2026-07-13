@@ -88,7 +88,7 @@ python main.py
 - **打包依赖修复**：添加 playwright hidden imports，内置 PyInstaller hook 正确收集 driver 文件
 - **启动预检查**：程序启动时提前检查/下载浏览器，避免登录时才等待
 - **构建脚本**：`build.bat` 一键安装依赖 + 打包
-- **v1.3 补丁 (2026-07-13)**：修复日志卡片末行截断、浏览器检测优化（有 Edge 跳过 Chromium 下载）、图文页 networkidle 超时兜底
+- **v1.3 补丁 (2026-07-13)**：修复日志卡片末行截断、浏览器检测优化（有 Edge 跳过 Chromium 下载）、图文页 networkidle 超时兜底、手动模块改为循环执行直到停止
 
 ### Claude (AI Assistant) 的贡献
 - **代码实现**：executor.py 多通道回退 + `_ensure_playwright_browsers()` 自动下载函数
