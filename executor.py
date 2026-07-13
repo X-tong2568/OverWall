@@ -25,16 +25,50 @@ _CHROMIUM_REVISION = "1169"
 _FFMPEG_REVISION = "1011"
 
 
+def _find_system_browser() -> str | None:
+    """检测系统是否安装了 Edge 或 Chrome，有则返回名称，无则返回 None"""
+    import shutil
+    # 先用 PATH 查找
+    for name, exe in [("Edge", "msedge"), ("Chrome", "chrome")]:
+        if shutil.which(exe):
+            return name
+    # PATH 没有则查 Windows 常见安装路径
+    import platform
+    if platform.system() == "Windows":
+        edge_paths = [
+            os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
+            os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"),
+        ]
+        chrome_paths = [
+            os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+        ]
+        for p in edge_paths:
+            if os.path.exists(p):
+                return "Edge"
+        for p in chrome_paths:
+            if os.path.exists(p):
+                return "Chrome"
+    return None
+
+
 def _ensure_playwright_browsers(log_fn=None) -> bool:
     """
     确保 Playwright Chromium 浏览器可用
     查找优先级：
-      1. exe 同目录/playwright-browsers（打包环境持久化目录）
-      2. 系统全局 %LOCALAPPDATA%/ms-playwright（开发环境/全局安装）
-      3. 都没有 → 自动下载到 exe 同目录
+      1. 系统已安装 Edge/Chrome → 跳过下载，start_browser 会直接用
+      2. exe 同目录/playwright-browsers（打包环境持久化目录）
+      3. 系统全局 %LOCALAPPDATA%/ms-playwright（开发环境/全局安装）
+      4. 都没有 → 自动下载到 exe 同目录
     返回 True 表示浏览器已就绪
     """
     log = log_fn or (lambda msg: None)
+
+    # 先检测系统浏览器，有则跳过 Chromium 下载
+    sys_browser = _find_system_browser()
+    if sys_browser:
+        log(f"检测到系统 {sys_browser}，跳过 Chromium 下载")
+        return True
 
     if getattr(sys, 'frozen', False):
         local_root = os.path.join(os.path.dirname(sys.executable), 'playwright-browsers')
@@ -65,7 +99,7 @@ def _ensure_playwright_browsers(log_fn=None) -> bool:
     # 没找到 → 下载到本地持久化目录（无本地目录则用全局缓存）
     download_dir = local_root or global_cache
     os.environ['PLAYWRIGHT_BROWSERS_PATH'] = download_dir
-    log("正在下载 Chromium 浏览器（首次运行需约 145MB，请耐心等待）...")
+    log("未检测到系统浏览器，正在下载 Chromium（首次运行需约 145MB，请耐心等待）...")
     try:
         import requests as _requests
 
@@ -284,7 +318,10 @@ class TaskExecutor:
 
     # ---- 通用 ----
     async def _wait_content(self):
-        await self.page.wait_for_load_state("networkidle", timeout=10000)
+        try:
+            await self.page.wait_for_load_state("networkidle", timeout=10000)
+        except Exception:
+            pass  # 视频页/长连接页可能永远达不到 networkidle，忽略继续
         await asyncio.sleep(2)
 
     async def _dump_page(self, tag: str):
