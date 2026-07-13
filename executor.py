@@ -544,21 +544,14 @@ class TaskExecutor:
 
     # ---- 刷视频 ----
     async def study_videos(self, tab: int = 2, count: int = 5) -> int:
-        """刷视频学习：从积分页进入集团课程或案例学习
-        集团课程下按 jituan_priority 配置决定先刷专业课程(图文)还是视频课程"""
+        """刷视频学习：集团课程(视频课程) 或 案例学习"""
         points = 0
         tab_name = {2: "集团课程", 4: "案例学习"}.get(tab, f"tab{tab}")
 
         if tab == 2:
-            # 集团课程：按配置优先级刷子 tab
-            priority = self.cfg.get("jituan_priority", ["article", "video"])
-            for subtab in priority:
-                if not self._running:
-                    break
-                is_video = subtab == "video"
-                subtab_name = "视频课程" if is_video else "专业课程"
-                points += await self._do_study_loop(tab_name, subtab_name, count,
-                                                     click_play=is_video)
+            # 集团课程：只刷视频课程子tab（专业课程图文归 article 策略管）
+            points += await self._do_study_loop(tab_name, "视频课程", count,
+                                                 click_play=True)
         else:
             points += await self._do_study_loop(tab_name, None, count, click_play=True)
 

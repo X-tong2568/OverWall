@@ -25,7 +25,6 @@ DEFAULTS: dict = {
     # ---- 刷分策略 ----
     "strategy_order": ["article", "video", "exercise"],  # 图文 > 视频 > 每日答题
     "weekly_target": 30,
-    "jituan_priority": ["article", "video"],  # 集团课程子tab优先级: article=专业课程(图文), video=视频课程
     # ---- DeepSeek API ----
     "deepseek_api_key": "",
     "deepseek_base_url": "https://api.deepseek.com",

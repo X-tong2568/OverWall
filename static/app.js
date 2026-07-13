@@ -186,7 +186,7 @@
   $("#aboutOverlay").addEventListener("click", function(e){if(e.target===this)$("#aboutOverlay").classList.add("hidden");});
   $("#resetSettingsBtn").addEventListener("click", function(){
     if (!confirm("确定恢复默认？")) return;
-    fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({strategy_order:["article","video","exercise"],jituan_priority:["article","video"],weekly_target:30,headless:false,theme:themePresets.porcelain})}).then(function(){loadSettings();applyTheme(themePresets.porcelain);});
+    fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({strategy_order:["article","video","exercise"],weekly_target:30,headless:false,theme:themePresets.porcelain})}).then(function(){loadSettings();applyTheme(themePresets.porcelain);});
   });
 
   function loadSettings() {
@@ -196,7 +196,6 @@
       $("#cfgApiKey").value=c.deepseek_api_key||"";$("#cfgApiBase").value=c.deepseek_base_url||"https://api.deepseek.com";
       $("#cfgModel").value=c.deepseek_model||"deepseek-chat";$("#cfgTarget").value=c.weekly_target||30;
       $("#cfgHeadless").checked=c.headless||false;
-      var jp=(c.jituan_priority||["article","video"]).join(",");$("#cfgJituanPriority").value=jp;
       updateMockExamButton();
       // 按配置的策略顺序重排 UI
       var order=c.strategy_order||["article","video","exercise"];
@@ -215,7 +214,6 @@
       deepseek_api_key:$("#cfgApiKey").value.trim(),deepseek_base_url:$("#cfgApiBase").value.trim()||"https://api.deepseek.com",
       deepseek_model:$("#cfgModel").value||"deepseek-chat",weekly_target:parseInt($("#cfgTarget").value)||30,
       headless:$("#cfgHeadless").checked,strategy_order:getStrategyOrder(),
-      jituan_priority:$("#cfgJituanPriority").value.split(","),
       theme:{accent:$("#colorAccent").value,bg:$("#colorBg").value,text:$("#colorText").value,surface:$("#colorSurface").value}
     })}).then(function(){applyTheme({accent:$("#colorAccent").value,bg:$("#colorBg").value,text:$("#colorText").value,surface:$("#colorSurface").value});});
   }
