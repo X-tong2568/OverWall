@@ -339,16 +339,29 @@ def api_run_module(module: str):
                 res = await _executor.do_mock_exam(api_key, exam_index or 0)
                 _add_log("info", f"模拟考试: {res['correct']}/{res['total']}")
             elif module == "article":
-                res = await _executor.study_articles(5)
-                _add_log("info", f"图文: +{res}分")
-                _status_snapshot["session_articles"] += res
-                _status_snapshot["session_points"] += res
+                total = 0
+                while _executor and _executor.running:
+                    res = await _executor.study_articles(5)
+                    total += res
+                    _status_snapshot["session_articles"] += res
+                    _status_snapshot["session_points"] += res
+                    if res == 0:
+                        _add_log("warn", "图文: 无可读文章，暂停15秒后重试...")
+                        await asyncio.sleep(15)
+                _add_log("info", f"图文: 共+{total}分")
             elif module == "video":
-                res = await _executor.study_videos(tab=2, count=3)
-                res2 = await _executor.study_videos(tab=4, count=3) if res < 3 else 0
-                _add_log("info", f"视频: +{res+res2}分")
-                _status_snapshot["session_videos"] += (res + res2)
-                _status_snapshot["session_points"] += (res + res2)
+                total = 0
+                while _executor and _executor.running:
+                    res = await _executor.study_videos(tab=2, count=3)
+                    if res < 3:
+                        res += await _executor.study_videos(tab=4, count=3)
+                    total += res
+                    _status_snapshot["session_videos"] += res
+                    _status_snapshot["session_points"] += res
+                    if res == 0:
+                        _add_log("warn", "视频: 无可播视频，暂停15秒后重试...")
+                        await asyncio.sleep(15)
+                _add_log("info", f"视频: 共+{total}分")
         except Exception as e:
             _add_log("error", f"执行异常: {e}")
         # 检查 executor 是否被 stop 清除了
