@@ -63,14 +63,15 @@ def _find_system_browser() -> tuple[str | None, str | None]:
     return None, None
 
 
-def _ensure_playwright_browsers(log_fn=None) -> bool:
+def _ensure_playwright_browsers(log_fn=None, force_download: bool = False) -> bool:
     """
     确保 Playwright Chromium 浏览器可用
     查找优先级：
-      1. 系统已安装 Edge/Chrome → 跳过下载，start_browser 会用 executable_path 直连
+      1. 系统已安装 Edge/Chrome (非 force_download) → 跳过下载
       2. exe 同目录/playwright-browsers（打包环境持久化目录）
       3. 系统全局 %LOCALAPPDATA%/ms-playwright（开发环境/全局安装）
       4. 都没有 → 自动下载到 exe 同目录
+    force_download=True: 跳过系统浏览器检测，强制检查/下载 Chromium（用于系统浏览器启动失败后的回退）
     返回 True 表示浏览器已就绪
     """
     log = log_fn or (lambda msg: None)
@@ -86,11 +87,12 @@ def _ensure_playwright_browsers(log_fn=None) -> bool:
     persistent_dir = local_root or global_cache
     os.environ['PLAYWRIGHT_BROWSERS_PATH'] = persistent_dir
 
-    # 先检测系统浏览器，有则跳过 Chromium 下载
-    sys_name, sys_path = _find_system_browser()
-    if sys_name:
-        log(f"检测到系统 {sys_name}，跳过 Chromium 下载")
-        return True
+    # 非强制下载时，检测到系统浏览器则跳过（start_browser 策略1/2 会用）
+    if not force_download:
+        sys_name, sys_path = _find_system_browser()
+        if sys_name:
+            log(f"检测到系统 {sys_name}，跳过 Chromium 下载")
+            return True
 
     # 候选目录列表：先本地后全局
     candidates = []
@@ -246,12 +248,14 @@ class TaskExecutor:
                     except Exception:
                         continue
 
-            # 策略3: 使用下载到持久化目录的 Chromium
+            # 策略3: 强制下载 Chromium 到持久化目录（系统浏览器已在前两步失败）
             if not launched:
-                # 先确保 PLAYWRIGHT_BROWSERS_PATH 已设置且浏览器已下载
                 await self._warn("未找到可用浏览器，正在自动下载 Chromium...")
-                if _ensure_playwright_browsers(lambda msg: asyncio.ensure_future(self._info(msg))):
-                    # 查找下载后的 chromium 可执行文件
+                if _ensure_playwright_browsers(
+                    lambda msg: asyncio.ensure_future(self._info(msg)),
+                    force_download=True
+                ):
+                    # 下载完成后查找 chromium 可执行文件
                     chromium_exe = None
                     browsers_root = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "")
                     if browsers_root:
@@ -264,20 +268,21 @@ class TaskExecutor:
                         if os.path.exists(candidate):
                             chromium_exe = candidate
 
-                    try:
-                        if chromium_exe:
+                    if chromium_exe:
+                        try:
                             self.browser = await p.chromium.launch(
                                 executable_path=chromium_exe, **launch_opts
                             )
-                        else:
-                            self.browser = await p.chromium.launch(**launch_opts)
-                        await self._info("使用自带 Chromium（已自动安装）")
-                        launched = True
-                    except Exception as e2:
-                        await self._error(f"Chromium 启动失败: {e2}")
+                            await self._info("使用自带 Chromium（已自动安装）")
+                            launched = True
+                        except Exception as e2:
+                            await self._error(f"Chromium 启动失败: {e2}")
+                            return None
+                    else:
+                        await self._error("Chromium 下载后未找到可执行文件，请手动安装 Chrome 或 Edge")
                         return None
                 else:
-                    await self._error("浏览器自动下载失败，请手动安装 Chrome 或 Edge")
+                    await self._error("Chromium 下载失败，请手动安装 Chrome 或 Edge")
                     return None
 
             context = await self.browser.new_context(viewport={"width": 1366, "height": 768})
