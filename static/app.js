@@ -159,6 +159,18 @@
     });
   });
 
+  // 重置每日练习计数
+  var resetBtn = $("#resetDailyExercise");
+  if (resetBtn) {
+    resetBtn.addEventListener("click", function(e){
+      e.preventDefault();
+      if (!confirm("确定重置每日练习计数？")) return;
+      fetch("/api/reset_daily_exercise", {method:"POST"})
+        .then(function(r){return r.json();})
+        .then(function(resp){addLog("--:--:--","info",resp.msg||"已重置");});
+    });
+  }
+
   function runModule(mod, extra) {
     engineRunning = true;
     $$(".btn-module").forEach(function(b){b.disabled=true;b.style.opacity="0.5";});

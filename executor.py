@@ -469,73 +469,111 @@ class TaskExecutor:
         await self._info(f"图文结束: +{points}分")
         return points
 
-    async def _click_article_card(self, seen_titles: set = None) -> bool:
-        """找到并点击课程卡片（滚动加载更多 + 去重）"""
-        if seen_titles is None:
-            seen_titles = set()
+    async def _click_article_card(self, seen_ids: set = None) -> bool:
+        """找到并点击课程卡片（courseid 去重 + 滚动加载 + 多平台兼容）
+
+        实测 DOM 结构（视频课程页）：
+        <li class="course-item" courseid="HUIccW5aemEWCPh">
+          <span class="info-item _name">课程标题</span>
+          <span class="info-item _hours">0.1 课程时长</span>
+        </li>
+        平台不通过 CSS class 标记已完成状态，因此用 courseid 做唯一去重键。
+        """
+        if seen_ids is None:
+            seen_ids = set()
+
+        # 卡片选择器（实测：视频课程页用 li.course-item，图文页用 li.course-card--hero 等）
+        CARD_SELECTORS = (
+            'li.course-item, li.course-card--hero, li.course-card--list, '
+            'li.course-card--text, li.course-card, li[class*="course-card"], '
+            'li[class*="course-item"], div.course-card, div[class*="course-card"]'
+        )
+        # JS：提取卡片信息（courseid 优先做去重键，标题备用）
+        JS_EXTRACT_CARDS = f"""(seen) => {{
+            const cards = document.querySelectorAll('{CARD_SELECTORS}');
+            const results = [];
+            for (let i = 0; i < cards.length; i++) {{
+                const card = cards[i];
+                // 去重键：courseid 属性 > data-id 属性 > 规范化标题
+                const cid = card.getAttribute('courseid') || card.getAttribute('data-id') || '';
+                // 标题：实测 span.info-item._name / span._name
+                let titleEl = card.querySelector('._name, .course-title, .card-title, [class*="course-title"], [class*="card-title"]');
+                if (!titleEl) {{
+                    const candidates = card.querySelectorAll('[class*="title"], [class*="_name"]');
+                    for (const c of candidates) {{
+                        const cn = c.className || '';
+                        if (!/(status|badge|tag|label|mark|complete|finish|learned|done)/i.test(cn)) {{
+                            titleEl = c; break;
+                        }}
+                    }}
+                }}
+                if (!titleEl) titleEl = card;
+                let title = (titleEl.innerText || titleEl.textContent || '').replace(/\\s+/g, ' ').trim();
+                // 去重判断：courseid 优先，标题回退
+                const dedupKey = cid || title;
+                const alreadySeen = (cid && seen.includes(cid)) || (!cid && title && seen.includes(title));
+                results.push({{index: i, title: title, courseid: cid, dedupKey: dedupKey, alreadySeen: alreadySeen}});
+            }}
+            return results;
+        }}"""
+
         try:
             # 滚动直到找到未看过的卡片
             for attempt in range(10):
-                # 检查是否有未看过的卡片
-                first_unseen = await self.page.evaluate("""(seen) => {
-                    const cards = document.querySelectorAll('li.course-card--hero, li.course-card--list, li.course-card--text, li.course-item');
-                    for (const card of cards) {
-                        if (card.classList.contains('is-learned')) continue;  // 跳过已学习
-                        const titleEl = card.querySelector('[class*="title"], [class*="_name"]') || card;
-                        const title = (titleEl.innerText || '').trim();
-                        if (title && !seen.includes(title)) return title;
-                    }
-                    return '';
-                }""", list(seen_titles))
+                cards_info = await self.page.evaluate(JS_EXTRACT_CARDS, list(seen_ids))
+
+                first_unseen = None
+                for ci in cards_info:
+                    if not ci["alreadySeen"] and ci["dedupKey"]:
+                        first_unseen = ci
+                        break
 
                 if first_unseen:
-                    break  # 找到了，退出滚动循环
+                    break  # 找到了
 
                 # 没找到 → 滚动加载更多
-                prev = await self.page.evaluate("""
-                    () => document.querySelectorAll('li.course-card--hero, li.course-card--list, li.course-card--text, li.course-item').length
-                """)
+                prev = await self.page.evaluate(
+                    f"() => document.querySelectorAll('{CARD_SELECTORS}').length")
                 await self.page.evaluate("""() => {
                     const el = document.querySelector('.study-content, main') || document.scrollingElement || document.body;
                     el.scrollTop = el.scrollHeight;
                     window.scrollTo(0, document.body.scrollHeight);
                 }""")
                 await asyncio.sleep(1)
-                now = await self.page.evaluate("""
-                    () => document.querySelectorAll('li.course-card--hero, li.course-card--list, li.course-card--text, li.course-item').length
-                """)
+                now = await self.page.evaluate(
+                    f"() => document.querySelectorAll('{CARD_SELECTORS}').length")
                 if now == prev:
                     break  # 没新内容了
 
-            # 用 JS 找所有卡片和标题
-            cards_info = await self.page.evaluate("""() => {
-                const cards = document.querySelectorAll('li.course-card--hero, li.course-card--list, li.course-card--text, li.course-item');
-                return Array.from(cards).map((card, i) => {
-                    const isLearned = card.classList.contains('is-learned');
-                    const titleEl = card.querySelector('[class*="title"], [class*="_name"]') || card;
-                    return {index: i, title: (titleEl.innerText || titleEl.textContent || '').trim(), isLearned: isLearned};
-                });
-            }""")
+            # 重新提取最新卡片列表
+            cards_info = await self.page.evaluate(JS_EXTRACT_CARDS, list(seen_ids))
 
             if not cards_info:
                 await self._warn("  页面无课程卡片")
                 return False
 
-            # 找第一个没看过的
+            # 日志：列出所有卡片状态
             for ci in cards_info:
-                if ci.get("isLearned"):
-                    continue  # 跳过已学习
-                if ci["title"] and ci["title"] not in seen_titles:
-                    # 用 Playwright locator 点击（比 JS click 可靠）
-                    card = self.page.locator('li.course-card--hero, li.course-card--list, li.course-card--text, li.course-item').nth(ci["index"])
-                    if await card.count() > 0:
-                        await card.scroll_into_view_if_needed()
-                        await asyncio.sleep(0.3)
-                        await card.click()
-                        await self._info(f"  点击: {ci['title'][:50]}")
-                        seen_titles.add(ci["title"])
-                        await asyncio.sleep(1)
-                        return True
+                marker = "V" if ci["alreadySeen"] else "N"
+                cid_str = f" [{ci['courseid'][:12]}]" if ci['courseid'] else ""
+                await self._info(f"    [{marker}]{cid_str} {ci['title'][:60]}")
+
+            # 找第一个未看过的
+            for ci in cards_info:
+                if ci["alreadySeen"]:
+                    continue
+                if not ci["dedupKey"]:
+                    continue
+                # 用 Playwright locator 点击
+                card = self.page.locator(CARD_SELECTORS).nth(ci["index"])
+                if await card.count() > 0:
+                    await card.scroll_into_view_if_needed()
+                    await asyncio.sleep(0.3)
+                    await card.click()
+                    await self._info(f"  点击: {ci['title'][:50]}")
+                    seen_ids.add(ci["dedupKey"])
+                    await asyncio.sleep(1)
+                    return True
 
             await self._warn(f"  所有{len(cards_info)}个卡片均已看过")
         except Exception as e:
@@ -648,7 +686,7 @@ class TaskExecutor:
                 await self._info("  已点击播放")
                 return
 
-    async def _wait_study_done(self, timeout: int = 3600) -> bool:
+    async def _wait_study_done(self, timeout: int = 36000) -> bool:
         """等待学习倒计时，显示进度，响应停止信号"""
         for sec in range(timeout):
             if not self._running:
@@ -684,10 +722,10 @@ class TaskExecutor:
 
         await self._info("→ 每日练习")
 
-        # 先检查每日积分是否已满
-        daily_limit = await self._check_daily_exercise_limit()
-        if daily_limit >= 3:
-            await self._info(f"每日练习已获 {daily_limit} 分（已达上限），跳过")
+        # 本地日计数检查（替代原来读平台周累计 #dtStudyWeek 的错误逻辑）
+        today_pts = self._get_today_exercise_points()
+        if today_pts >= 3:
+            await self._info(f"今日练习已获 {today_pts} 分（已达日上限），跳过")
             return result
 
         await self.page.goto(url, wait_until="networkidle", timeout=30000)
@@ -715,11 +753,11 @@ class TaskExecutor:
                 if result["points"] >= 3:
                     await self._info("今日练习已满3分（本地计数）")
                     break
-                # 每5题检查一次score页面
+                # 每5题用本地日计数兜底检查
                 if i > 0 and i % 5 == 0:
-                    dl = await self._check_daily_exercise_limit()
-                    if dl >= 3:
-                        await self._info(f"每日练习已达上限({dl}分)，停止")
+                    today_pts = self._get_today_exercise_points()
+                    if today_pts >= 3:
+                        await self._info(f"每日练习已达上限({today_pts}分)，停止")
                         break
 
                 submit_holder[0] = None  # 清空上次响应
@@ -876,7 +914,6 @@ class TaskExecutor:
                         await asyncio.sleep(0.1)
                     except Exception:
                         await self._warn(f"  点击选项 {letter} 失败")
-            return
         await asyncio.sleep(0.5)
 
         # 提交
@@ -950,6 +987,7 @@ class TaskExecutor:
             if correct.upper() == answer.upper():
                 result["correct"] += 1
                 result["points"] += 1
+                self._add_today_exercise_point()
                 await self._info(f"  ✓ 答对! ({correct})")
             else:
                 result["wrong"] += 1
@@ -960,6 +998,7 @@ class TaskExecutor:
                 record_answer(q_text, opts, answer, source="submitAnswer")
             result["correct"] += 1
             result["points"] += 1
+            self._add_today_exercise_point()
             await self._info(f"  ✓ 答对! (toast)")
         else:
             await self._warn(f"  无法确认答案，跳过入库")
@@ -1044,6 +1083,7 @@ class TaskExecutor:
 
         result["correct"] += 1  # 乐观计分
         result["points"] += 1
+        self._add_today_exercise_point()
 
         # 刷新
         refresh_btn = self.page.locator('button:has-text("刷新")').first
@@ -1051,25 +1091,58 @@ class TaskExecutor:
             await refresh_btn.click()
         await asyncio.sleep(2)
 
-    # ---- 检查每日练习积分上限 ----
-    async def _check_daily_exercise_limit(self) -> int:
-        """从积分页检查每日练习已获分数"""
-        base = self.cfg.get("base_url", "").rstrip("/")
+    # ---- 每日练习本地日计数（替代平台周累计检查） ----
+    # 平台 #dtStudyWeek 是周累计值，不能用来判断当日是否已达上限
+    # 本地 daily_state.json 按日期记录当日得分，跨天自动清零
+
+    @staticmethod
+    def _daily_state_path() -> str:
+        """日计数文件路径（与 question_bank.json 同级）"""
+        import sys as _sys
+        if getattr(_sys, 'frozen', False):
+            return os.path.join(os.path.dirname(_sys.executable), "daily_state.json")
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "daily_state.json")
+
+    @staticmethod
+    def _load_daily_state() -> dict:
+        """读取日计数文件，日期变了自动归零"""
+        import datetime as _dt
+        today = _dt.date.today().isoformat()
+        path = TaskExecutor._daily_state_path()
         try:
-            score_url = f"{base}/src/apps/app-aqhb/src/components/studentWeb/user-score/index.html?type=week"
-            await self.page.goto(score_url, wait_until="networkidle", timeout=15000)
-            await asyncio.sleep(2)
-            el = self.page.locator("#dtStudyWeek")
-            if await el.count() > 0:
-                text = (await el.text_content() or "").strip()
-                # "已领 3 分" → 提取数字
-                import re as _re
-                m = _re.search(r"(\d+)", text)
-                if m:
-                    return int(m.group(1))
-        except Exception:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict) and data.get("date") == today:
+                    return data
+        except (json.JSONDecodeError, IOError):
             pass
-        return 0
+        return {"date": today, "exercise_points": 0}
+
+    @staticmethod
+    def _save_daily_state(data: dict):
+        """写入日计数文件"""
+        path = TaskExecutor._daily_state_path()
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def _get_today_exercise_points(self) -> int:
+        """获取当日已获得的练习积分"""
+        state = self._load_daily_state()
+        return state.get("exercise_points", 0)
+
+    def _add_today_exercise_point(self):
+        """答对一题 +1 分，写入文件"""
+        state = self._load_daily_state()
+        state["exercise_points"] = state.get("exercise_points", 0) + 1
+        self._save_daily_state(state)
+
+    def reset_daily_exercise(self):
+        """公开方法：手动清除当日计数（容错）"""
+        import datetime as _dt
+        today = _dt.date.today().isoformat()
+        self._save_daily_state({"date": today, "exercise_points": 0})
+        self._info("  每日练习计数已重置")
 
     # ---- 获取周积分 ----
     async def get_weekly_points(self) -> int:

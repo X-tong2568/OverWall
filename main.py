@@ -290,6 +290,16 @@ def api_stop():
     _add_log("info", "已停止")
     return jsonify({"code": 200, "msg": "已停止"})
 
+
+@app.route("/api/reset_daily_exercise", methods=["POST"])
+def api_reset_daily_exercise():
+    """手动清除每日练习本地计数（容错按钮）"""
+    global _executor
+    if _executor:
+        _executor.reset_daily_exercise()
+        _add_log("info", "每日练习计数已手动重置")
+    return jsonify({"code": 200, "msg": "每日练习计数已重置"})
+
 # ---- 获取考试列表 ----
 @app.route("/api/exam_list", methods=["POST"])
 def api_exam_list():
