@@ -25,38 +25,49 @@ _CHROMIUM_REVISION = "1169"
 _FFMPEG_REVISION = "1011"
 
 
-def _find_system_browser() -> str | None:
-    """检测系统是否安装了 Edge 或 Chrome，有则返回名称，无则返回 None"""
+def _find_system_browser() -> tuple[str | None, str | None]:
+    """检测系统浏览器，返回 (名称, 可执行文件完整路径)，未找到返回 (None, None)"""
     import shutil
-    # 先用 PATH 查找
-    for name, exe in [("Edge", "msedge"), ("Chrome", "chrome")]:
-        if shutil.which(exe):
-            return name
-    # PATH 没有则查 Windows 常见安装路径
     import platform
+
+    # Windows: 查 PATH + 常见安装路径
     if platform.system() == "Windows":
-        edge_paths = [
-            os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
-            os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"),
+        candidates = [
+            ("Edge", "msedge", [
+                os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
+                os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"),
+            ]),
+            ("Chrome", "chrome", [
+                os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+                os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+            ]),
         ]
-        chrome_paths = [
-            os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
-            os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
-        ]
-        for p in edge_paths:
-            if os.path.exists(p):
-                return "Edge"
-        for p in chrome_paths:
-            if os.path.exists(p):
-                return "Chrome"
-    return None
+        for name, exe_name, paths in candidates:
+            # 先查 PATH
+            found = shutil.which(exe_name)
+            if found and os.path.exists(found):
+                return name, found
+            # 再查固定路径
+            for p in paths:
+                if os.path.exists(p):
+                    return name, p
+    else:
+        # Linux/macOS: 只用 PATH
+        for name, exe in [("Chrome", "google-chrome-stable"),
+                          ("Chrome", "google-chrome"),
+                          ("Edge", "microsoft-edge")]:
+            found = shutil.which(exe)
+            if found:
+                return name, found
+
+    return None, None
 
 
 def _ensure_playwright_browsers(log_fn=None) -> bool:
     """
     确保 Playwright Chromium 浏览器可用
     查找优先级：
-      1. 系统已安装 Edge/Chrome → 跳过下载，start_browser 会直接用
+      1. 系统已安装 Edge/Chrome → 跳过下载，start_browser 会用 executable_path 直连
       2. exe 同目录/playwright-browsers（打包环境持久化目录）
       3. 系统全局 %LOCALAPPDATA%/ms-playwright（开发环境/全局安装）
       4. 都没有 → 自动下载到 exe 同目录
@@ -64,19 +75,24 @@ def _ensure_playwright_browsers(log_fn=None) -> bool:
     """
     log = log_fn or (lambda msg: None)
 
-    # 先检测系统浏览器，有则跳过 Chromium 下载
-    sys_browser = _find_system_browser()
-    if sys_browser:
-        log(f"检测到系统 {sys_browser}，跳过 Chromium 下载")
-        return True
-
+    # 确定持久化浏览器目录（打包环境用 exe 同目录，开发环境用全局缓存）
     if getattr(sys, 'frozen', False):
         local_root = os.path.join(os.path.dirname(sys.executable), 'playwright-browsers')
     else:
         local_root = None
+    global_cache = os.path.join(os.environ.get('LOCALAPPDATA', ''), 'ms-playwright')
+
+    # 始终设置 PLAYWRIGHT_BROWSERS_PATH，防止 Playwright 内部解析到 PyInstaller 临时目录
+    persistent_dir = local_root or global_cache
+    os.environ['PLAYWRIGHT_BROWSERS_PATH'] = persistent_dir
+
+    # 先检测系统浏览器，有则跳过 Chromium 下载
+    sys_name, sys_path = _find_system_browser()
+    if sys_name:
+        log(f"检测到系统 {sys_name}，跳过 Chromium 下载")
+        return True
 
     # 候选目录列表：先本地后全局
-    global_cache = os.path.join(os.environ.get('LOCALAPPDATA', ''), 'ms-playwright')
     candidates = []
     if local_root:
         candidates.append(local_root)
@@ -92,13 +108,11 @@ def _ensure_playwright_browsers(log_fn=None) -> bool:
             break
 
     if chromium_exe:
-        # 告知 playwright 浏览器位置
         os.environ['PLAYWRIGHT_BROWSERS_PATH'] = found_dir
         return True
 
-    # 没找到 → 下载到本地持久化目录（无本地目录则用全局缓存）
-    download_dir = local_root or global_cache
-    os.environ['PLAYWRIGHT_BROWSERS_PATH'] = download_dir
+    # 没找到 → 下载到本地持久化目录
+    download_dir = persistent_dir
     log("未检测到系统浏览器，正在下载 Chromium（首次运行需约 145MB，请耐心等待）...")
     try:
         import requests as _requests
@@ -193,51 +207,78 @@ class TaskExecutor:
 
             p = await async_playwright().start()
             headless = self.cfg.get("headless", False)
+            common_args = [
+                "--disable-blink-features=AutomationControlled",
+                "--autoplay-policy=no-user-gesture-required",
+                "--mute-audio",
+            ]
             launch_opts = {
                 "headless": headless,
                 "slow_mo": self.cfg.get("browser_slow_mo", 300),
-                "args": [
-                    "--disable-blink-features=AutomationControlled",
-                    "--autoplay-policy=no-user-gesture-required",
-                    "--mute-audio",
-                ],
+                "args": common_args,
             }
 
-            # 按优先级尝试浏览器通道（Edge 优先，Win10/11 自带且更稳定）
-            channels = [
-                ("msedge", "系统 Edge"),
-                ("chrome", "系统 Chrome"),
-            ]
             launched = False
-            for channel, label in channels:
-                try:
-                    self.browser = await p.chromium.launch(channel=channel, **launch_opts)
-                    await self._info(f"使用 {label}")
-                    launched = True
-                    break
-                except Exception:
-                    continue
 
-            # 回退：使用 Playwright 自带 Chromium
-            if not launched:
+            # 策略1: 用 executable_path 直连系统浏览器（绕过 Playwright channel 解析，
+            # 避免 PyInstaller 打包后 channel 找不到浏览器）
+            sys_name, sys_path = _find_system_browser()
+            if sys_path:
                 try:
-                    self.browser = await p.chromium.launch(**launch_opts)
-                    await self._info("使用自带 Chromium（视频可能无法播放，但计时仍有效）")
+                    self.browser = await p.chromium.launch(
+                        executable_path=sys_path, **launch_opts
+                    )
+                    await self._info(f"使用系统 {sys_name}（{sys_path}）")
                     launched = True
-                except Exception:
-                    # 浏览器未安装，尝试自动下载
-                    await self._warn("未找到可用浏览器，正在自动下载 Chromium...")
-                    if _ensure_playwright_browsers(lambda msg: asyncio.ensure_future(self._info(msg))):
-                        try:
+                except Exception as e:
+                    await self._warn(f"系统 {sys_name} 启动失败: {e}")
+
+            # 策略2: channel 方式回退（开发环境或 executable_path 失败后尝试）
+            if not launched:
+                for channel, label in [("msedge", "系统 Edge"), ("chrome", "系统 Chrome")]:
+                    try:
+                        self.browser = await p.chromium.launch(
+                            channel=channel, **launch_opts
+                        )
+                        await self._info(f"使用 {label}（channel）")
+                        launched = True
+                        break
+                    except Exception:
+                        continue
+
+            # 策略3: 使用下载到持久化目录的 Chromium
+            if not launched:
+                # 先确保 PLAYWRIGHT_BROWSERS_PATH 已设置且浏览器已下载
+                await self._warn("未找到可用浏览器，正在自动下载 Chromium...")
+                if _ensure_playwright_browsers(lambda msg: asyncio.ensure_future(self._info(msg))):
+                    # 查找下载后的 chromium 可执行文件
+                    chromium_exe = None
+                    browsers_root = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "")
+                    if browsers_root:
+                        candidate = os.path.join(
+                            browsers_root,
+                            f"chromium-{_CHROMIUM_REVISION}",
+                            "chrome-win",
+                            "chrome.exe",
+                        )
+                        if os.path.exists(candidate):
+                            chromium_exe = candidate
+
+                    try:
+                        if chromium_exe:
+                            self.browser = await p.chromium.launch(
+                                executable_path=chromium_exe, **launch_opts
+                            )
+                        else:
                             self.browser = await p.chromium.launch(**launch_opts)
-                            await self._info("使用自带 Chromium（已自动安装）")
-                            launched = True
-                        except Exception as e2:
-                            await self._error(f"Chromium 启动失败: {e2}")
-                            return None
-                    else:
-                        await self._error("浏览器自动下载失败，请手动安装 Chrome 或 Edge")
+                        await self._info("使用自带 Chromium（已自动安装）")
+                        launched = True
+                    except Exception as e2:
+                        await self._error(f"Chromium 启动失败: {e2}")
                         return None
+                else:
+                    await self._error("浏览器自动下载失败，请手动安装 Chrome 或 Edge")
+                    return None
 
             context = await self.browser.new_context(viewport={"width": 1366, "height": 768})
             self.page = await context.new_page()

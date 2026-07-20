@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.5.1 (2026-07-20)
+
+- **PyInstaller 打包浏览器路径修复**：`start_browser()` 新增 `executable_path` 直连策略绕过 Playwright channel 解析，`_ensure_playwright_browsers()` 在检测系统浏览器之前预置 `PLAYWRIGHT_BROWSERS_PATH` 防止回退到临时目录 `_MEI*`，`_find_system_browser()` 改为返回完整可执行文件路径
+- **根因**：v1.4 新增 `_find_system_browser()` 检测到系统 Edge 后直接 return，跳过了 v1.3 原有的 `PLAYWRIGHT_BROWSERS_PATH` 设置，导致 channel 启动失败后回退到 `p.chromium.launch()` 时路径解析到 PyInstaller 临时目录
+
+### Claude (AI Assistant) 的贡献
+- **Bug 修复**：诊断 PyInstaller 临时目录路径问题，三函数重构（`_find_system_browser` 返回值扩展、`_ensure_playwright_browsers` 环境变量预置、`start_browser` 三策略启动链）
+- **文档更新**：README/CHANGELOG/关于弹窗版本号同步到 v1.5.1
+
 ## v1.5 (2026-07-20)
 
 - **超时 1h → 10h**：`_wait_study_done` 默认超时 36000 秒，适配长时长课程
