@@ -59,11 +59,21 @@
           <button id="btnStop" class="btn btn-danger btn-lg hidden">&#9209; 停止</button>
         </section>
         <section class="control-bar control-bar-modules" id="moduleBar" style="display:none">
+          <!-- 答题 -->
           <button class="btn btn-module" data-module="exercise">每日练习</button>
-          <a href="#" id="resetDailyExercise" style="font-size:11px;color:var(--muted);text-decoration:none;vertical-align:middle;">重置计数</a>
+          <button class="btn btn-ghost btn-sm" id="resetDailyExercise" type="button" title="手动清除今日练习计数，跨天自动重置">重置计数</button>
           <button class="btn btn-module" data-module="mock_exam" id="btnMockExam">模拟考试</button>
-          <button class="btn btn-module" data-module="article">刷图文</button>
-          <button class="btn btn-module" data-module="video">刷视频</button>
+          <span class="module-sep">|</span>
+          <!-- 图文 -->
+          <span class="module-label">图文</span>
+          <button class="btn btn-module btn-module-sm" data-module="article_recommend" title="推荐页图文">推荐</button>
+          <button class="btn btn-module btn-module-sm" data-module="article_pro" title="集团课程-专业课程(图文)">专业课程</button>
+          <span class="module-sep">|</span>
+          <!-- 视频 -->
+          <span class="module-label">视频</span>
+          <button class="btn btn-module btn-module-sm" data-module="video_group" title="集团课程-视频课程">集团视频</button>
+          <button class="btn btn-module btn-module-sm" data-module="video_unit" title="单位课程">单位课程</button>
+          <button class="btn btn-module btn-module-sm" data-module="video_case" title="案例学习（含事故案例）">案例学习</button>
         </section>
         <section class="control-bar control-bar-modules" id="examListBar" style="display:none"></section>
 
@@ -115,7 +125,7 @@
     <footer class="footer">
       <span id="footerStatus">就绪</span>
       <span class="footer-disclaimer">仅供个人学习研究使用，请遵守目标平台协议。开发者不承担任何使用风险。</span>
-      <span class="footer-version">v1.5.1 &middot; <span id="btnAbout" class="about-link">关于</span></span>
+      <span class="footer-version">v1.6.0 &middot; <span id="btnAbout" class="about-link">关于</span></span>
     </footer>
   </main>
 
@@ -128,10 +138,11 @@
       </div>
       <div class="about-dialog-body">
         <h4>版本</h4>
-        <p>OverWall v1.5.1 — 你有张良计，我有过墙梯</p>
+        <p>OverWall v1.6.0 — 你有张良计，我有过墙梯</p>
         <h4>功能说明</h4>
         <p>OverWall 是一款学习平台辅助工具，用于自动化完成图文学习、视频学习、每日练习和模拟考试等任务。</p>
-        <p>v1.5.1 修复：PyInstaller 打包后浏览器路径写死到临时目录导致 Chromium 启动失败。v1.5 新增：超时10h适配长课程、视频courseid去重、每日练习本地日计数(跨天自动清零)、重置计数容错按钮。修复：每日练习提交按钮失效。</p>
+        <p>v1.6.0 新增：前端分类按钮（图文推荐/专业课程、视频集团/单位/案例学习）、is-learned已学跳过、触屏滑动懒加载、三级标签遍历、实例级courseid全局去重、视频播放按钮增强。修复：单位课程名称匹配、asyncio导入缺失。</p>
+        <p>v1.5.1 修复：PyInstaller 打包后浏览器路径修复。v1.5 新增：超时10h、视频courseid去重、每日练习本地日计数。</p>
         <h4>免责声明</h4>
         <p>本软件仅供个人学习研究使用。使用者应自行承担使用本软件的一切风险和责任。开发者不对因使用本软件而导致的任何直接或间接损失负责，包括但不限于：账号异常、数据丢失、平台封禁等。</p>
         <p>严禁将本软件用于任何违法用途。请遵守目标平台的使用协议和相关法律法规。</p>

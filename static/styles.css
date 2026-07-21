@@ -74,6 +74,9 @@ body { display: flex; justify-content: center; align-items: flex-start; min-heig
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-module { background: var(--bg); border: 1px solid var(--border); color: var(--muted); }
 .btn-module:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.btn-module-sm { padding: 4px 10px; font-size: 12px; }
+.module-sep { color: var(--border); font-size: 14px; user-select: none; align-self: center; }
+.module-label { font-size: 11px; color: var(--muted); align-self: center; margin: 0 2px; text-transform: uppercase; letter-spacing: 1px; }
 
 /* ===== 双栏仪表盘 ===== */
 .dashboard {

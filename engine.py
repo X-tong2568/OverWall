@@ -219,8 +219,10 @@ class OverWallEngine:
         count = min(3, remaining)
         await self._info(f"→ 执行策略: 视频学习 ({count}个)")
 
-        # 尝试 tab=2 集团课程，空则 tab=4 案例学习
+        # 回退链：集团课程 → 单位课程 → 案例学习
         points = await self.executor.study_videos(tab=2, count=count)
+        if points == 0:
+            points = await self.executor.study_videos(tab=3, count=count)
         if points == 0:
             points = await self.executor.study_videos(tab=4, count=count)
 

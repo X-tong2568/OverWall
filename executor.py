@@ -177,6 +177,7 @@ class TaskExecutor:
         self.page: Page | None = None
         self._running = False
         self._login_done = False
+        self._seen_courseids: set = set()  # 实例级 courseid 去重（跨轮次持久，避免刷重复视频）
 
     # ---- 日志 ----
     async def _info(self, msg: str):
@@ -482,12 +483,11 @@ class TaskExecutor:
         # 从积分页进入
         if await self._goto_study_from_score("推荐"):
             await self._dump_page("article")
-            seen = set()
             for i in range(count):
                 if not self._running:
                     break
                 await self._info(f"图文 [{i+1}/{count}]: 点击文章卡片...")
-                clicked = await self._click_article_card(seen)
+                clicked = await self._click_article_card()
                 if not clicked:
                     await self._warn("图文: 未找到可点击的文章")
                     break
@@ -515,18 +515,16 @@ class TaskExecutor:
         await self._info(f"图文结束: +{points}分")
         return points
 
-    async def _click_article_card(self, seen_ids: set = None) -> bool:
-        """找到并点击课程卡片（courseid 去重 + 滚动加载 + 多平台兼容）
+    async def _click_article_card(self) -> bool:
+        """找到并点击课程卡片（实例级 courseid 去重 + 触屏滚动加载 + is-learned 检测）
 
         实测 DOM 结构（视频课程页）：
         <li class="course-item" courseid="HUIccW5aemEWCPh">
           <span class="info-item _name">课程标题</span>
           <span class="info-item _hours">0.1 课程时长</span>
         </li>
-        平台不通过 CSS class 标记已完成状态，因此用 courseid 做唯一去重键。
+        使用 self._seen_courseids 实例级去重，同一进程内所有分类共享，避免跨轮重复。
         """
-        if seen_ids is None:
-            seen_ids = set()
 
         # 卡片选择器（实测：视频课程页用 li.course-item，图文页用 li.course-card--hero 等）
         CARD_SELECTORS = (
@@ -555,10 +553,16 @@ class TaskExecutor:
                 }}
                 if (!titleEl) titleEl = card;
                 let title = (titleEl.innerText || titleEl.textContent || '').replace(/\\s+/g, ' ').trim();
-                // 去重判断：courseid 优先，标题回退
+                // 平台标记：已学习卡片带 is-learned CSS class（兼容直接标记和父级标记）
+                const isLearned = card.classList.contains('is-learned') ||
+                                  !!card.querySelector('.is-learned') ||
+                                  !!card.closest('.is-learned');
+                // 去重判断：courseid 优先，标题回退，is-learned 兜底
                 const dedupKey = cid || title;
-                const alreadySeen = (cid && seen.includes(cid)) || (!cid && title && seen.includes(title));
-                results.push({{index: i, title: title, courseid: cid, dedupKey: dedupKey, alreadySeen: alreadySeen}});
+                const alreadySeen = isLearned ||
+                                    (cid && seen.includes(cid)) ||
+                                    (!cid && title && seen.includes(title));
+                results.push({{index: i, title: title, courseid: cid, dedupKey: dedupKey, alreadySeen: alreadySeen, isLearned: isLearned}});
             }}
             return results;
         }}"""
@@ -566,7 +570,7 @@ class TaskExecutor:
         try:
             # 滚动直到找到未看过的卡片
             for attempt in range(10):
-                cards_info = await self.page.evaluate(JS_EXTRACT_CARDS, list(seen_ids))
+                cards_info = await self.page.evaluate(JS_EXTRACT_CARDS, list(self._seen_courseids))
 
                 first_unseen = None
                 for ci in cards_info:
@@ -577,15 +581,38 @@ class TaskExecutor:
                 if first_unseen:
                     break  # 找到了
 
-                # 没找到 → 滚动加载更多
+                # 没找到 → 模拟移动端触屏滑动加载更多
+                # 页面本质是手机网页，PC 端 scrollTop 赋值不会触发懒加载
+                # 需要用 TouchEvent 派发触屏滑动事件
                 prev = await self.page.evaluate(
                     f"() => document.querySelectorAll('{CARD_SELECTORS}').length")
                 await self.page.evaluate("""() => {
                     const el = document.querySelector('.study-content, main') || document.scrollingElement || document.body;
-                    el.scrollTop = el.scrollHeight;
-                    window.scrollTo(0, document.body.scrollHeight);
+                    const vh = window.innerHeight;
+                    // 模拟手指从屏幕下方 75% 向上滑到 25%
+                    const startY = vh * 0.75;
+                    const endY = vh * 0.25;
+                    const midX = window.innerWidth / 2;
+                    // 派发 touch 事件链
+                    el.dispatchEvent(new TouchEvent('touchstart', {
+                        touches: [{clientX: midX, clientY: startY, identifier: 0}],
+                        bubbles: true, cancelable: true
+                    }));
+                    el.dispatchEvent(new TouchEvent('touchmove', {
+                        touches: [{clientX: midX, clientY: endY, identifier: 0}],
+                        bubbles: true, cancelable: true
+                    }));
+                    el.dispatchEvent(new TouchEvent('touchend', {
+                        changedTouches: [{clientX: midX, clientY: endY, identifier: 0}],
+                        bubbles: true, cancelable: true
+                    }));
+                    // scrollIntoView 兜底：把最后一个卡片滚到视野内触发 IntersectionObserver
+                    const cards = document.querySelectorAll('li.course-item, li[class*="course-card"], div[class*="course-card"]');
+                    if (cards.length > 0) {
+                        cards[cards.length - 1].scrollIntoView({block: 'end', behavior: 'instant'});
+                    }
                 }""")
-                await asyncio.sleep(1)
+                await asyncio.sleep(1.5)  # 多等 0.5s 给懒加载响应时间
                 now = await self.page.evaluate(
                     f"() => document.querySelectorAll('{CARD_SELECTORS}').length")
                 if now == prev:
@@ -600,7 +627,12 @@ class TaskExecutor:
 
             # 日志：列出所有卡片状态
             for ci in cards_info:
-                marker = "V" if ci["alreadySeen"] else "N"
+                if ci.get("isLearned"):
+                    marker = "L"  # L = 平台标记已学习 (is-learned)
+                elif ci["alreadySeen"]:
+                    marker = "V"  # V = 本地去重已看过
+                else:
+                    marker = "N"  # N = 新卡片
                 cid_str = f" [{ci['courseid'][:12]}]" if ci['courseid'] else ""
                 await self._info(f"    [{marker}]{cid_str} {ci['title'][:60]}")
 
@@ -617,7 +649,7 @@ class TaskExecutor:
                     await asyncio.sleep(0.3)
                     await card.click()
                     await self._info(f"  点击: {ci['title'][:50]}")
-                    seen_ids.add(ci["dedupKey"])
+                    self._seen_courseids.add(ci["dedupKey"])
                     await asyncio.sleep(1)
                     return True
 
@@ -628,15 +660,16 @@ class TaskExecutor:
 
     # ---- 刷视频 ----
     async def study_videos(self, tab: int = 2, count: int = 5) -> int:
-        """刷视频学习：集团课程(视频课程) 或 案例学习"""
+        """刷视频学习：集团课程(视频课程) / 单位课程 / 案例学习(含事故案例)"""
         points = 0
-        tab_name = {2: "集团课程", 4: "案例学习"}.get(tab, f"tab{tab}")
+        tab_name = {2: "集团课程", 3: "单位课程", 4: "案例学习"}.get(tab, f"tab{tab}")
 
         if tab == 2:
-            # 集团课程：只刷视频课程子tab（专业课程图文归 article 策略管）
+            # 集团课程：只刷视频课程子tab（事故案例与案例学习tab=4内容重复，不在此回退）
             points += await self._do_study_loop(tab_name, "视频课程", count,
                                                  click_play=True)
         else:
+            # 单位课程 / 案例学习：无二级导航，直接刷
             points += await self._do_study_loop(tab_name, None, count, click_play=True)
 
         await self._info(f"视频({tab_name})结束: +{points}分")
@@ -644,7 +677,7 @@ class TaskExecutor:
 
     async def _do_study_loop(self, score_tab: str, subtab: str | None,
                               count: int, click_play: bool) -> int:
-        """通用刷课循环：积分页进入 -> 可选切子tab -> 点卡片 -> [播放] -> 等倒计时"""
+        """通用刷课循环：积分页进入 -> 切子tab -> 遍历三级标签 -> 点卡片 -> [播放] -> 等倒计时"""
         points = 0
         label = subtab if subtab else score_tab
         await self._info(f"→ {label}")
@@ -656,17 +689,31 @@ class TaskExecutor:
         # 切子 tab（如「专业课程」「视频课程」）
         if subtab:
             await self._click_subtab(subtab)
+            # 发现三级分类标签（如视频课程下的「安全警示视频」「交通违法微视频」）
+            third_tags = await self._get_third_level_tags(subtab)
+            if third_tags:
+                await self._info(f"  三级标签({len(third_tags)}): {third_tags}")
+        else:
+            third_tags = []
 
         await self._dump_page(f"study_{label}")
-        seen = set()
+        tag_idx = 0  # 当前三级标签索引
         for i in range(count):
             if not self._running:
                 break
             await self._info(f"{label} [{i+1}/{count}]: 点击卡片...")
-            clicked = await self._click_article_card(seen)
+            clicked = await self._click_article_card()
             if not clicked:
-                await self._warn(f"{label}: 未找到可点击的课程")
-                break
+                # 当前标签无卡片 → 尝试切下一个三级标签
+                if third_tags and tag_idx + 1 < len(third_tags):
+                    tag_idx += 1
+                    await self._click_third_level_tag(third_tags[tag_idx])
+                    await self._info(f"  切三级标签 [{tag_idx+1}/{len(third_tags)}]: {third_tags[tag_idx]}")
+                    # 重试点击卡片（新标签下）
+                    clicked = await self._click_article_card()
+                if not clicked:
+                    await self._warn(f"{label}: 未找到可点击的课程")
+                    break
             await self._wait_content()
             if click_play:
                 await self._click_play()
@@ -686,9 +733,75 @@ class TaskExecutor:
                 break
             if subtab:
                 await self._click_subtab(subtab)
+                # 恢复当前三级标签选择
+                if third_tags and tag_idx < len(third_tags):
+                    await self._click_third_level_tag(third_tags[tag_idx])
 
         await self._info(f"{label}结束: +{points}分")
         return points
+
+    async def _get_third_level_tags(self, parent_subtab: str) -> list[str]:
+        """发现当前页面三级分类标签（排除二级导航和'全部'筛选器）
+
+        实测结构：集团课程 → 视频课程 → [全部, 安全警示视频, 交通违法微视频]
+        三级标签与二级导航共用 .study-cats__item class
+        """
+        KNOWN_SUBTABS = {"视频课程", "专业课程", "图文课程"}
+        try:
+            tags = await self.page.evaluate("""(knownNames) => {
+                const items = document.querySelectorAll('.study-cats__item');
+                const results = [];
+                for (const el of items) {
+                    const text = (el.innerText || el.textContent || '').trim();
+                    // 排除二级导航名称、排除"全部"、排除空文本
+                    if (!text || text === '全部' || knownNames.includes(text)) continue;
+                    // 排除过短的文本（可能是图标）
+                    if (text.length < 2) continue;
+                    results.push(text);
+                }
+                return results;
+            }""", list(KNOWN_SUBTABS))
+            return tags if tags else []
+        except Exception as e:
+            await self._warn(f"  发现三级标签异常: {e}")
+            return []
+
+    async def _click_third_level_tag(self, tag_name: str):
+        """点击三级分类标签（如安全警示视频、交通违法微视频）"""
+        await self._info(f"    点击三级标签: {tag_name}")
+        for sel in [
+            f'.study-cats__item:has-text("{tag_name}")',
+            f'.study-tabs__item:has-text("{tag_name}")',
+            f'span:has-text("{tag_name}")',
+        ]:
+            el = self.page.locator(sel).first
+            if await el.count() > 0 and await el.is_visible():
+                await el.click()
+                await asyncio.sleep(1)
+                return
+        await self._warn(f"    未找到三级标签: {tag_name}")
+
+    async def _click_study_tab(self, tab_name: str) -> bool:
+        """点击页面顶部一级 study-tabs 标签（如事故案例 data-tab="accident"）
+
+        与 _click_subtab 不同：_click_subtab 操作 .study-cats__item（二级导航），
+        本方法操作 .study-tabs__item（一级页面 tab，切换整个内容区）
+        返回 True 表示点击成功
+        """
+        await self._info(f"  切换到 study-tab: {tab_name}")
+        for sel in [
+            f'.study-tabs__item:has-text("{tab_name}")',
+            f'[data-tab]:has-text("{tab_name}")',
+            f'div:has-text("{tab_name}")',
+        ]:
+            el = self.page.locator(sel).first
+            if await el.count() > 0 and await el.is_visible():
+                await el.click()
+                await asyncio.sleep(1.5)
+                await self._wait_content()
+                return True
+        await self._warn(f"  未找到 study-tab: {tab_name}")
+        return False
 
     async def _click_subtab(self, subtab_name: str):
         """在集团课程页面点击二级导航（视频课程/专业课程）"""
@@ -724,13 +837,70 @@ class TaskExecutor:
         return False
 
     async def _click_play(self):
-        """点击视频播放按钮"""
-        for sel in [".wechat-play-button", ".fa-play", '[class*="play"]']:
-            el = self.page.locator(sel).first
-            if await el.count() > 0 and await el.is_visible():
-                await el.click()
-                await self._info("  已点击播放")
+        """点击视频播放按钮 + JS video.play() 兜底
+
+        实测平台播放器结构（wechat-video 自定义播放器）：
+          .wechat-play-button (覆盖层大播放按钮) → 点击触发播放
+          .wechat-control-btn.wechat-play-pause-btn (底部控制栏)
+          video#myVideo (controls=false, 自定义控件)
+        策略：force=True 绕过 Playwright actionability 检查（覆盖层可能拦截）
+        """
+        # 策略1：覆盖层大播放按钮（最可靠的入口）
+        for sel in [
+            ".wechat-play-button",              # 实测：覆盖层播放按钮
+            ".wechat-control-btn.wechat-play-pause-btn",  # 实测：底部控制栏
+            "#myVideo",                         # 实测：video 元素 id
+            ".fa-play",                         # Font Awesome 图标
+            ".vjs-big-play-button",             # Video.js（备用）
+            ".plyr__play-button",               # Plyr（备用）
+        ]:
+            try:
+                el = self.page.locator(sel).first
+                if await el.count() > 0:
+                    # force=True：跳过可见性/遮挡检查，直接点击
+                    await el.click(force=True)
+                    await self._info(f"  已点击播放 [{sel}]")
+                    await asyncio.sleep(1)
+                    return
+            except Exception:
+                continue
+
+        # 策略2：点击 <video> 元素自身
+        try:
+            video_el = self.page.locator("video").first
+            if await video_el.count() > 0:
+                await video_el.click(force=True)
+                await self._info("  已点击 <video> 元素")
+                await asyncio.sleep(1)
                 return
+        except Exception:
+            pass
+
+        # 策略3：JS video.play() 终极兜底
+        try:
+            played = await self.page.evaluate("""() => {
+                let count = 0;
+                document.querySelectorAll('video').forEach(v => {
+                    try { v.muted = true; v.play(); count++; } catch(e) {}
+                });
+                // iframe 内的 video
+                document.querySelectorAll('iframe').forEach(iframe => {
+                    try {
+                        const vids = iframe.contentDocument?.querySelectorAll('video');
+                        if (vids) vids.forEach(v => {
+                            try { v.muted = true; v.play(); count++; } catch(e) {}
+                        });
+                    } catch(e) {}
+                });
+                return count;
+            }""")
+            if played > 0:
+                await self._info(f"  JS video.play() 启动了 {played} 个视频（已静音）")
+                return
+        except Exception:
+            pass
+
+        await self._warn("  未找到播放按钮，也未找到 video 元素")
 
     async def _wait_study_done(self, timeout: int = 36000) -> bool:
         """等待学习倒计时，显示进度，响应停止信号"""

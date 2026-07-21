@@ -162,8 +162,7 @@
   // 重置每日练习计数
   var resetBtn = $("#resetDailyExercise");
   if (resetBtn) {
-    resetBtn.addEventListener("click", function(e){
-      e.preventDefault();
+    resetBtn.addEventListener("click", function(){
       if (!confirm("确定重置每日练习计数？")) return;
       fetch("/api/reset_daily_exercise", {method:"POST"})
         .then(function(r){return r.json();})

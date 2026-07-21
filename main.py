@@ -5,6 +5,7 @@ OverWall 主程序 —— Flask 服务 + 状态轮询
 import json
 import os
 import sys
+import asyncio
 import threading
 from datetime import datetime
 
@@ -348,6 +349,72 @@ def api_run_module(module: str):
             elif module == "mock_exam":
                 res = await _executor.do_mock_exam(api_key, exam_index or 0)
                 _add_log("info", f"模拟考试: {res['correct']}/{res['total']}")
+            # ---- 图文分类（单类循环，不跨类回退） ----
+            elif module == "article_recommend":
+                # 推荐页图文
+                total = 0
+                while _executor and _executor.running:
+                    res = await _executor.study_articles(5)
+                    total += res
+                    _status_snapshot["session_articles"] += res
+                    _status_snapshot["session_points"] += res
+                    if res == 0:
+                        _add_log("warn", "图文(推荐): 无可读文章，暂停15秒后重试...")
+                        await asyncio.sleep(15)
+                _add_log("info", f"图文(推荐): 共+{total}分")
+            elif module == "article_pro":
+                # 集团课程-专业课程(图文)
+                total = 0
+                while _executor and _executor.running:
+                    if not await _executor._goto_study_from_score("集团课程"):
+                        break
+                    await _executor._click_subtab("专业课程")
+                    res = await _executor._do_study_loop("集团课程", "专业课程", 5, click_play=False)
+                    total += res
+                    _status_snapshot["session_articles"] += res
+                    _status_snapshot["session_points"] += res
+                    if res == 0:
+                        _add_log("warn", "图文(专业课程): 无可读，暂停15秒后重试...")
+                        await asyncio.sleep(15)
+                _add_log("info", f"图文(专业课程): 共+{total}分")
+            # ---- 视频分类（单类循环，不跨类回退） ----
+            elif module == "video_group":
+                # 集团课程-视频课程
+                total = 0
+                while _executor and _executor.running:
+                    res = await _executor.study_videos(tab=2, count=3)
+                    total += res
+                    _status_snapshot["session_videos"] += res
+                    _status_snapshot["session_points"] += res
+                    if res == 0:
+                        _add_log("warn", "视频(集团-视频课程): 无可播，暂停15秒后重试...")
+                        await asyncio.sleep(15)
+                _add_log("info", f"视频(集团-视频课程): 共+{total}分")
+            elif module == "video_unit":
+                # 单位课程
+                total = 0
+                while _executor and _executor.running:
+                    res = await _executor.study_videos(tab=3, count=3)
+                    total += res
+                    _status_snapshot["session_videos"] += res
+                    _status_snapshot["session_points"] += res
+                    if res == 0:
+                        _add_log("warn", "视频(单位课程): 无可播，暂停15秒后重试...")
+                        await asyncio.sleep(15)
+                _add_log("info", f"视频(单位课程): 共+{total}分")
+            elif module == "video_case":
+                # 案例学习
+                total = 0
+                while _executor and _executor.running:
+                    res = await _executor.study_videos(tab=4, count=3)
+                    total += res
+                    _status_snapshot["session_videos"] += res
+                    _status_snapshot["session_points"] += res
+                    if res == 0:
+                        _add_log("warn", "视频(案例学习): 无可播，暂停15秒后重试...")
+                        await asyncio.sleep(15)
+                _add_log("info", f"视频(案例学习): 共+{total}分")
+            # ---- 通用：引擎使用的全回退链（保留兼容） ----
             elif module == "article":
                 total = 0
                 while _executor and _executor.running:
@@ -363,6 +430,8 @@ def api_run_module(module: str):
                 total = 0
                 while _executor and _executor.running:
                     res = await _executor.study_videos(tab=2, count=3)
+                    if res < 3:
+                        res += await _executor.study_videos(tab=3, count=3)
                     if res < 3:
                         res += await _executor.study_videos(tab=4, count=3)
                     total += res

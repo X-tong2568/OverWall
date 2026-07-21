@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.6.0 (2026-07-21)
+
+- **前端分类按钮**：通用"刷图文/刷视频"拆分为 6 个具体分类按钮（图文推荐/专业课程、视频集团/单位/案例学习），点击直达对应分类
+- **is-learned 已学跳过**：恢复 v1.4 的 `is-learned` CSS class 检测，与 courseid 去重双保险，日志 `[L]` 标记平台已学卡片
+- **触屏滑动懒加载**：`TouchEvent` 触屏滑动模拟 + `scrollIntoView` 兜底，解决移动端页面 PC 滚动不触发懒加载
+- **三级标签遍历**：`_get_third_level_tags` / `_click_third_level_tag` 自动发现并切换视频课程下的分类标签（安全警示视频、交通违法微视频等）
+- **实例级 courseid 全局去重**：`self._seen_courseids` 跨方法/跨轮次持久，同一进程内所有分类共享去重
+- **视频播放按钮增强**：基于实测 DOM（`.wechat-play-button` / `#myVideo`）重写 3 层兜底，`force=True` 绕过遮挡
+- **单位课程**：实测确认平台名称为"单位课程"并修正匹配，`asyncio` 导入缺失修复
+- **去事故案例重复**：实测事故案例与案例学习(tab=4) 100% courseid 重叠，合并为案例学习
+
+### Claude (AI Assistant) 的贡献
+- **5 项 Bug 修复**：TODO.md 全清，涉及 is-learned、触屏滚动、分类导航、三级标签、播放按钮
+- **实测驱动开发**：多次运行脚本登录平台 dump 真实 DOM，精确定位选择器和数据结构
+- **架构改进**：实例级去重、分类按钮化、回退链优化
+- **文档更新**：TODO.md 完结、CHANGELOG/关于弹窗同步 v1.6.0
+
 ## v1.5.1 (2026-07-20)
 
 - **PyInstaller 打包浏览器路径修复**：`start_browser()` 新增 `executable_path` 直连策略绕过 Playwright channel 解析，`_ensure_playwright_browsers()` 在检测系统浏览器之前预置 `PLAYWRIGHT_BROWSERS_PATH` 防止回退到临时目录 `_MEI*`，`_find_system_browser()` 改为返回完整可执行文件路径
