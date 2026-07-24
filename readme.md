@@ -1,6 +1,6 @@
 # OverWall - 你有张良计 我有过墙梯
 
-> v1.6.0 — 某企业安全积分自动化脚本
+> v1.6.1 — 某企业安全积分自动化脚本
 
 ## 功能
 
@@ -77,6 +77,7 @@ python main.py
 
 | 版本 | 日期 | 主要变更 |
 |------|------|---------|
+| v1.6.1 | 2026-07-24 | 紧急修复：答题只选A不调API（V4/Pro reasoning_content 单选提取 + seen_ids 变量名修复 + 选择器兜底）|
 | v1.6.0 | 2026-07-21 | 前端分类按钮 + is-learned已学跳过 + 触屏滑动懒加载 + 三级标签遍历 + 全局去重 + 播放按钮增强 |
 | v1.5.1 | 2026-07-20 | PyInstaller 打包浏览器路径修复（executable_path 直连 + PLAYWRIGHT_BROWSERS_PATH 预置） |
 | v1.5 | 2026-07-20 | 超时10h + 提交按钮修复 + 视频courseid去重 + 每日练习本地日计数 |
@@ -87,6 +88,15 @@ python main.py
 | v1.0 | 2026-07-09 | 首版发布：每日练习/图文/视频/模拟考试 + AI答题 + 题库系统 |
 
 完整更新记录见 [CHANGELOG.md](CHANGELOG.md)
+
+### v1.6.1 贡献
+
+#### XTong 的贡献
+- **Bug 反馈**：发现并报告答题只选A、不调用API获取答案的关键Bug
+
+#### Claude (AI Assistant) 的贡献
+- **Bug 修复**：ai_solver V4/Pro reasoning_content 单选提取、executor seen_ids 变量名修复、选择器兜底增强
+- **诊断增强**：_solve_multiple_choice 新增题干/API Key 为空的诊断日志
 
 ### v1.6.0 贡献
 

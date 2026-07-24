@@ -78,18 +78,23 @@ def query_deepseek(question_html: str, options: list[dict], api_key: str,
         content = msg.get("content", "") or ""
         reasoning = msg.get("reasoning_content", "") or ""
 
-        # 多选时从 reasoning_content 提取答案（token不够时答案在推理里）
-        if (not content) and is_multi and reasoning:
-            # 尝试从推理中提取 "答案是 ABC" 或 "答案应该是 ABD"
+        # V4/Pro 模型开启 thinking 后，content 可能为空，答案在 reasoning 里
+        # 单选和多选都需要从 reasoning_content 兜底提取
+        if (not content) and reasoning:
             import re as _re2
             m = _re2.search(r"答案[是应为]+?\s*([A-F]{1,6})", reasoning)
             if m:
                 content = m.group(1)
-            else:
-                # 找推理中最后出现的字母组合
+            elif is_multi:
+                # 多选：找推理中最后出现的字母组合（2-6个连续字母）
                 letters = _re2.findall(r"[A-F]{2,6}", reasoning)
                 if letters:
                     content = letters[-1]
+            else:
+                # 单选：找推理中首次出现的单个大写A-F字母
+                single = _re2.findall(r"\b([A-F])\b", reasoning)
+                if single:
+                    content = single[0]
 
         if not content and is_multi:
             # 重试一次

@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.6.1 (2026-07-24)
+
+- **答题只选 A 修复**：`query_deepseek` 的 `reasoning_content` 提取逻辑从仅多选扩展到单选+多选，V4/Pro 模型开启 thinking 后 `content` 为空时也能从推理文本中捞出答案字母
+- **seen_ids 变量名修复**：`_click_article_card` 第 622 行 `seen_ids` → `self._seen_courseids`，修复 v1.6.0 重构遗漏导致的 NameError 崩溃
+- **选择器兜底增强**：`_extract_options` 选项提取新增 `.option-item, .answer-item, li[class*="option"]` 兜底，题干提取新增 `h3, h4, .title, .subject-text` 等选择器，防止平台改版后取不到题目
+- **诊断日志**：`_solve_multiple_choice` 新增题干为空 / API Key 为空时的明确警告
+
+### Claude (AI Assistant) 的贡献
+- **Bug 排查**：追踪整条答题链路定位两层故障（reasoning_content 单选丢失 + 变量名遗漏）
+- **代码修复**：ai_solver.py reasoning_content 单选提取、executor.py seen_ids 修复 + 选择器兜底 + 诊断日志
+- **文档更新**：README/CHANGELOG/关于弹窗/启动横幅同步 v1.6.1
+
 ## v1.6.0 (2026-07-21)
 
 - **前端分类按钮**：通用"刷图文/刷视频"拆分为 6 个具体分类按钮（图文推荐/专业课程、视频集团/单位/案例学习），点击直达对应分类

@@ -619,7 +619,7 @@ class TaskExecutor:
                     break  # 没新内容了
 
             # 重新提取最新卡片列表
-            cards_info = await self.page.evaluate(JS_EXTRACT_CARDS, list(seen_ids))
+            cards_info = await self.page.evaluate(JS_EXTRACT_CARDS, list(self._seen_courseids))
 
             if not cards_info:
                 await self._warn("  页面无课程卡片")
@@ -1021,8 +1021,8 @@ class TaskExecutor:
                 // 清除旧标记
                 document.querySelectorAll('[data-ow-opt]').forEach(el => el.removeAttribute('data-ow-opt'));
 
-                // 策略1: .ue-option-item（每日练习）
-                let items = document.querySelectorAll('.ue-option-item');
+                // 策略1: .ue-option-item（每日练习）+ 兜底选择器
+                let items = document.querySelectorAll('.ue-option-item, .option-item, .answer-item, li[class*="option"]');
 
                 // 策略2: radio input + label（模拟考试）— 找每个题目的选项
                 if (items.length === 0) {
@@ -1055,8 +1055,12 @@ class TaskExecutor:
                     }
                 });
 
-                // 题干
-                const titleEl = document.querySelector('.ue-question-title, .ques-item-tip .content, [class*="question-title"]');
+                // 题干：多选择器兜底，防止平台改版后取不到题目文本
+                const titleEl = document.querySelector(
+                    '.ue-question-title, .ques-item-tip .content, [class*="question-title"], ' +
+                    '.question-title, .subject-text, .exam-question, .topic, ' +
+                    'h3, h4, .title, [class*="question"]'
+                );
                 if (titleEl) {
                     question = titleEl.innerText || titleEl.textContent || '';
                 }
@@ -1087,8 +1091,14 @@ class TaskExecutor:
     async def _solve_multiple_choice(self, q_text: str, opts: list, qtype: str,
                                      api_key: str, submit_holder: list, result: dict):
         """解答选择题：题库 → DeepSeek → 点击 → 提交 → 入库 → 刷新"""
-        await self._info(f"  题型: {qtype} | 题干: {q_text[:60]}...")
+        await self._info(f"  题型: {qtype} | 题干: {q_text[:60] if q_text else '(空)'}...")
         await self._info(f"  选项: {[o['text'][:20] for o in opts]}")
+
+        # 诊断日志：帮助排查"只选A不调API"问题
+        if not q_text:
+            await self._warn("  ⚠ 题干为空！页面元素可能已改版，无法匹配题库也无法调API")
+        if not api_key:
+            await self._warn("  ⚠ API Key 为空！不会调用 DeepSeek，将默认选A")
 
         # 先登记题目到题库（答案待定）
         bank_key = ""
