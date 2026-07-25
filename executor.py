@@ -1476,17 +1476,27 @@ class TaskExecutor:
                 is_multi = qtype == '多选'
                 is_judge = qtype == '判断'
                 qtype_label = "多选题" if is_multi else ("判断题" if is_judge else "")
-                await self._info(f"  题[{qi+1}]{'(多选)' if is_multi else ''}: {q_text[:40]}...")
+                await self._info(f"  题[{qi+1}]{'(多选)' if is_multi else ''}: {q_text[:60] if q_text else '(空)'}...")
+                # 诊断日志：帮助排查"只选A不调API"问题
+                if not q_text:
+                    await self._warn("    ⚠ 题干为空！页面元素可能已改版，无法匹配题库也无法调API")
+                if not api_key:
+                    await self._warn("    ⚠ API Key 为空！不会调用 DeepSeek，将默认选A")
                 answer = lookup_question(q_text, opts) if q_text else None
                 if answer:
                     await self._info(f"    题库→{answer}")
                 elif q_text and api_key:
+                    await self._info(f"    题库未命中，调用 DeepSeek...")
                     answer = query_deepseek(f"<p>{q_text}</p>", opts, api_key,
                                             self.cfg.get("deepseek_base_url", "https://api.deepseek.com"),
                                             question_type=qtype_label,
                                             model=self.cfg.get("deepseek_model", "deepseek-v4-flash"))
                     if answer:
                         await self._info(f"    DeepSeek→{answer}")
+                    else:
+                        await self._warn("    DeepSeek 返回空")
+                if not answer:
+                    await self._warn(f"    无答案来源，默认{'全选ABCD' if is_multi else '选A'}")
                 if is_multi:
                     ans_letters = (answer or "ABCD").upper()
                     indices = [ord(c) - ord('A') for c in ans_letters if 'A' <= c <= 'F']
