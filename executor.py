@@ -1230,13 +1230,13 @@ class TaskExecutor:
             await self._warn(f"  无法确认答案，跳过入库")
             # 不记分，等系统确认
 
-        # 如果答错，需要手动点刷新（答对会自动刷新）
-        if not is_correct and correct and correct.upper() != answer.upper():
-            await self._info("  答错，点击刷新获取下一题...")
-            refresh_btn = self.page.locator('button:has-text("刷新")').first
-            if await refresh_btn.count() > 0:
-                await refresh_btn.click()
-        await asyncio.sleep(2)
+        # 提交后点刷新获取下一题（平台不再自动刷新，统一手动点）
+        refresh_btn = self.page.locator('button:has-text("刷新")').first
+        if await refresh_btn.count() > 0:
+            await refresh_btn.click()
+            await asyncio.sleep(2)
+        else:
+            await asyncio.sleep(2)
 
     # ---- 填空题解答 ----
     async def _solve_fill_blank(self, q_text: str, qtype: str,

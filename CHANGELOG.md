@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.6.4 (2026-07-25)
+
+- **每日练习刷新修复**：`_solve_multiple_choice` 提交答案后无条件点击刷新按钮获取下一题，不再依赖平台自动跳转（平台已取消答对自动刷新行为）。与填空题 `_solve_fill_blank` 行为对齐。
+
+### XTong 的贡献
+- **Bug 反馈**：发现每日练习答对后不自动跳转下一题，定位到刷新按钮逻辑缺失
+
+### Claude (AI Assistant) 的贡献
+- **Bug 修复**：`_solve_multiple_choice` 刷新逻辑改为无条件手动刷新，与 `_solve_fill_blank` 对齐
+- **文档更新**：README/CHANGELOG/关于弹窗/启动横幅同步 v1.6.4
+
+## v1.6.3 (2026-07-25)
+
+- **模拟考试诊断日志补全**：`do_mock_exam` 答题循环新增题干为空 / API Key 为空的诊断警告，与每日练习 `_solve_multiple_choice` 的诊断日志保持一致
+- **API 调用路径对齐**：模拟考试和每日练习的 DeepSeek 调用统一使用 `query_deepseek` 同一路径
+
+### XTong 的贡献
+- **需求提出**：要求模拟考试诊断日志与每日练习对齐
+
+### Claude (AI Assistant) 的贡献
+- **代码补全**：模拟考试诊断日志 + API 路径对齐
+- **文档更新**：README 版本演进表同步
+
 ## v1.6.2 (2026-07-25)
 
 - **DeepSeek 旧模型移除**：`deepseek-chat` / `deepseek-reasoner` 已于 2026-07-24 被 DeepSeek 官方停用，所有引用替换为 `deepseek-v4-flash`（新默认）和 `deepseek-v4-pro`
