@@ -1,6 +1,6 @@
 # OverWall - 你有张良计 我有过墙梯
 
-> v1.6.1 — 某企业安全积分自动化脚本
+> v1.6.2 — 某企业安全积分自动化脚本
 
 ## 功能
 
@@ -16,7 +16,7 @@
 
 - **后端**: Python + Flask + Playwright
 - **前端**: 原生 HTML/CSS/JS（轮询 + 设置覆盖层）
-- **AI**: DeepSeek API（支持 V3 / R1 / V4 Pro）
+- **AI**: DeepSeek API（V4 Flash / V4 Pro）
 - **题库**: JSON 本地存储，MD5 去重，置信度分级
 
 ## 系统兼容性
@@ -66,9 +66,8 @@ python main.py
 | 来源 | 置信度 | 说明 |
 |------|--------|------|
 | submitAnswer | 100 | 平台判分，不可覆盖 |
-| deepseek-v4-pro | 80 | AI 推理模型 |
-| deepseek-reasoner | 65 | R1 推理 |
-| deepseek-chat | 40 | V3 快速 |
+| deepseek-v4-pro | 80 | V4 Pro 推理 |
+| deepseek-v4-flash | 45 | V4 Flash 快速 |
 | pending | 0 | 待定 |
 
 低置信度答案不会覆盖高置信度，平台正确答案永远最高优先级。
@@ -77,6 +76,7 @@ python main.py
 
 | 版本 | 日期 | 主要变更 |
 |------|------|---------|
+| v1.6.2 | 2026-07-25 | DeepSeek 旧模型移除（chat/reasoner 停用），替换为 V4 Flash / V4 Pro，定价表更新 |
 | v1.6.1 | 2026-07-24 | 紧急修复：答题只选A不调API（V4/Pro reasoning_content 单选提取 + seen_ids 变量名修复 + 选择器兜底）|
 | v1.6.0 | 2026-07-21 | 前端分类按钮 + is-learned已学跳过 + 触屏滑动懒加载 + 三级标签遍历 + 全局去重 + 播放按钮增强 |
 | v1.5.1 | 2026-07-20 | PyInstaller 打包浏览器路径修复（executable_path 直连 + PLAYWRIGHT_BROWSERS_PATH 预置） |

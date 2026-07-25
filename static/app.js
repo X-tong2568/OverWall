@@ -205,7 +205,7 @@
       var c=resp.data;if(!c)return;
       $("#cfgBaseUrl").value=c.base_url||"";$("#cfgUsername").value=c.username||"";$("#cfgPassword").value=c.password||"";
       $("#cfgApiKey").value=c.deepseek_api_key||"";$("#cfgApiBase").value=c.deepseek_base_url||"https://api.deepseek.com";
-      $("#cfgModel").value=c.deepseek_model||"deepseek-chat";$("#cfgTarget").value=c.weekly_target||30;
+      $("#cfgModel").value=c.deepseek_model||"deepseek-v4-flash";$("#cfgTarget").value=c.weekly_target||30;
       $("#cfgHeadless").checked=c.headless||false;
       updateMockExamButton();
       // 按配置的策略顺序重排 UI
@@ -223,7 +223,7 @@
     fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
       base_url:$("#cfgBaseUrl").value.trim(),username:$("#cfgUsername").value.trim(),password:$("#cfgPassword").value,
       deepseek_api_key:$("#cfgApiKey").value.trim(),deepseek_base_url:$("#cfgApiBase").value.trim()||"https://api.deepseek.com",
-      deepseek_model:$("#cfgModel").value||"deepseek-chat",weekly_target:parseInt($("#cfgTarget").value)||30,
+      deepseek_model:$("#cfgModel").value||"deepseek-v4-flash",weekly_target:parseInt($("#cfgTarget").value)||30,
       headless:$("#cfgHeadless").checked,strategy_order:getStrategyOrder(),
       theme:{accent:$("#colorAccent").value,bg:$("#colorBg").value,text:$("#colorText").value,surface:$("#colorSurface").value}
     })}).then(function(){applyTheme({accent:$("#colorAccent").value,bg:$("#colorBg").value,text:$("#colorText").value,surface:$("#colorSurface").value});});

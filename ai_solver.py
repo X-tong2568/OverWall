@@ -14,7 +14,7 @@ def _strip(html: str) -> str:
 def query_deepseek(question_html: str, options: list[dict], api_key: str,
                    base_url: str = "https://api.deepseek.com",
                    question_type: str = "单选题",
-                   model: str = "deepseek-chat") -> str | None:
+                   model: str = "deepseek-v4-flash") -> str | None:
     """
     调用 DeepSeek API 获取答案（选择题）
     返回: 选项字母 "A"~"F"，失败返回 None
@@ -129,7 +129,7 @@ def query_deepseek(question_html: str, options: list[dict], api_key: str,
 def query_deepseek_fill(question_html: str, blanks_count: int, api_key: str,
                         base_url: str = "https://api.deepseek.com",
                         question_type: str = "填空题",
-                        model: str = "deepseek-chat") -> list[str]:
+                        model: str = "deepseek-v4-flash") -> list[str]:
     """
     调用 DeepSeek API 解答填空题
     返回: 每个空的答案列表 ["答案1", "答案2", ...]

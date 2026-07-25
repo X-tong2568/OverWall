@@ -110,8 +110,7 @@ def lookup_question(question_html: str, current_options: list[dict]) -> str | No
 SOURCE_CONFIDENCE = {
     "submitAnswer": 100,  # 平台判定，绝对正确
     "deepseek-v4-pro": 80,
-    "deepseek-reasoner": 65,
-    "deepseek-chat": 40,
+    "deepseek-v4-flash": 45,
     "deepseek": 35,       # 旧默认源
     "pending": 0,         # 待定
 }

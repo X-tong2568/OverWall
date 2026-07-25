@@ -1115,7 +1115,7 @@ class TaskExecutor:
             await self._info("  题库未命中，调用 DeepSeek...")
             answer = query_deepseek(f"<p>{q_text}</p>", opts, api_key,
                                     self.cfg.get("deepseek_base_url", "https://api.deepseek.com"),
-                                    question_type=qtype, model=self.cfg.get("deepseek_model", "deepseek-chat"))
+                                    question_type=qtype, model=self.cfg.get("deepseek_model", "deepseek-v4-flash"))
             if answer:
                 await self._info(f"  DeepSeek → {answer}")
             else:
@@ -1266,7 +1266,7 @@ class TaskExecutor:
         await self._info(f"  检测到 {blank_count} 个空，调用 DeepSeek...")
         answers = query_deepseek_fill(f"<p>{q_text}</p>", blank_count, api_key,
                                       self.cfg.get("deepseek_base_url", "https://api.deepseek.com"),
-                                      question_type=qtype, model=self.cfg.get("deepseek_model", "deepseek-chat"))
+                                      question_type=qtype, model=self.cfg.get("deepseek_model", "deepseek-v4-flash"))
 
         if not answers:
             await self._warn("  DeepSeek 填空返回空，跳过")
@@ -1484,7 +1484,7 @@ class TaskExecutor:
                     answer = query_deepseek(f"<p>{q_text}</p>", opts, api_key,
                                             self.cfg.get("deepseek_base_url", "https://api.deepseek.com"),
                                             question_type=qtype_label,
-                                            model=self.cfg.get("deepseek_model", "deepseek-chat"))
+                                            model=self.cfg.get("deepseek_model", "deepseek-v4-flash"))
                     if answer:
                         await self._info(f"    DeepSeek→{answer}")
                 if is_multi:
@@ -1543,7 +1543,7 @@ class TaskExecutor:
                 result["total"] += 1
                 result["correct"] += 1
                 if q_text:
-                    record_answer(q_text, opts, answer, source=self.cfg.get('deepseek_model', 'deepseek-chat'))
+                    record_answer(q_text, opts, answer, source=self.cfg.get('deepseek_model', 'deepseek-v4-flash'))
                 skip_streak = 0
             else:
                 # ---- 填空题 ----
@@ -1564,7 +1564,7 @@ class TaskExecutor:
                     await self._info(f"  题[{qi+1}] {fill_type}: {q_text[:40]}...")
                     answers = query_deepseek_fill(f"<p>{q_text}</p>", blanks, api_key,
                                                   self.cfg.get("deepseek_base_url", "https://api.deepseek.com"),
-                                                  question_type=fill_type, model=self.cfg.get("deepseek_model", "deepseek-chat"))
+                                                  question_type=fill_type, model=self.cfg.get("deepseek_model", "deepseek-v4-flash"))
                     if answers:
                         await self._info(f"    DeepSeek→{answers}")
                         # 逐个填入（用列表参数避免多参数报错）
@@ -1582,7 +1582,7 @@ class TaskExecutor:
                         result["correct"] += 1
                         # 录题库
                         if q_text:
-                            record_answer(q_text, [], answers[0] if len(answers) == 1 else "||".join(answers), source=self.cfg.get('deepseek_model', 'deepseek-chat'))
+                            record_answer(q_text, [], answers[0] if len(answers) == 1 else "||".join(answers), source=self.cfg.get('deepseek_model', 'deepseek-v4-flash'))
                         skip_streak = 0
                     else:
                         # 重试一次
@@ -1590,7 +1590,7 @@ class TaskExecutor:
                         answers = query_deepseek_fill(f"<p>{q_text}</p>", blanks, api_key,
                                                       self.cfg.get("deepseek_base_url", "https://api.deepseek.com"),
                                                       question_type=fill_type,
-                                                      model=self.cfg.get("deepseek_model", "deepseek-chat"))
+                                                      model=self.cfg.get("deepseek_model", "deepseek-v4-flash"))
                         if answers:
                             await self._info(f"    重试成功→{answers}")
                             for bi, ans in enumerate(answers[:blanks]):

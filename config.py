@@ -28,7 +28,7 @@ DEFAULTS: dict = {
     # ---- DeepSeek API ----
     "deepseek_api_key": "",
     "deepseek_base_url": "https://api.deepseek.com",
-    "deepseek_model": "deepseek-chat",  # deepseek-chat(V3) / deepseek-reasoner(R1)
+    "deepseek_model": "deepseek-v4-flash",  # deepseek-v4-flash(快) / deepseek-v4-pro(强)
     # ---- 浏览器 ----
     "headless": False,          # 是否无头运行
     "browser_slow_mo": 300,     # 操作间隔(ms)，防反爬

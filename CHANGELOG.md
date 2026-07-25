@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.6.2 (2026-07-25)
+
+- **DeepSeek 旧模型移除**：`deepseek-chat` / `deepseek-reasoner` 已于 2026-07-24 被 DeepSeek 官方停用，所有引用替换为 `deepseek-v4-flash`（新默认）和 `deepseek-v4-pro`
+- **新增 V4 Flash 模型**：下拉选项加入 `deepseek-v4-flash`，置信度 45，定价 ¥1/¥2/¥0.02（输入/输出/缓存，每百万 Token）
+- **定价表更新**：前端定价表、README 置信度表与实际 API 价格对齐
+- **全量兜底替换**：`config.py`、`executor.py`、`ai_solver.py`、`static/app.js`、`question_bank.py` 共 7 处 `deepseek-chat` 默认值/兜底值全部替换
+
+### XTong 的贡献
+- **模型跟进**：关注 DeepSeek 官方动态，发现 chat/reasoner 停用并要求更新
+
+### Claude (AI Assistant) 的贡献
+- **全面清理**：7 个文件、15+ 处引用逐一替换，定价/置信度/文档/UI 同步更新
+- **文档更新**：README/CHANGELOG/关于弹窗/启动横幅同步 v1.6.2
+
 ## v1.6.1 (2026-07-24)
 
 - **答题只选 A 修复**：`query_deepseek` 的 `reasoning_content` 提取逻辑从仅多选扩展到单选+多选，V4/Pro 模型开启 thinking 后 `content` 为空时也能从推理文本中捞出答案字母
