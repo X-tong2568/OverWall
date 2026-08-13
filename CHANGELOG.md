@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.7.0 (2026-08-13)
+
+- **AI 多服务商支持**：不再只支持 DeepSeek，改为 OpenAI 兼容协议一套代码覆盖 DeepSeek / OpenAI / Kimi（月之暗面）/ 通义千问（DashScope）/ 智谱 GLM / 硅基流动 + 自定义地址。设置页新增服务商下拉，切换自动填充默认 API 地址
+- **模型自动检测**：设置页新增「检测模型」按钮，调用服务商 `/models` 接口拉取可用模型列表（双候选路径兼容各家差异），用户从检测结果自选或手动输入，不再硬编码预设模型
+- **配置自动迁移**：旧 `deepseek_*` 配置键自动迁移为通用 `ai_provider / ai_key / ai_base_url / ai_model`，保存后旧键消失，老用户无感升级
+- **DeepSeek 专属参数门控**：thinking / reasoning_effort 仅 DeepSeek 服务商发送（其他家会 400），`reasoning_content` 兜底逻辑对所有服务商通用保留
+- **URL 规范化**：新增 `normalize_api_base()`，兼容 base 地址自带版本段的服务商（DashScope `compatible-mode/v1`、智谱 `paas/v4`）
+- **服务端模型探测接口**：新增 `POST /api/models`，服务端代理请求避免浏览器 CORS，错误文案中文透传
+
+### XTong 的贡献
+- **需求提出**：要求模型列表自动检测 + 自选模型，支持 DeepSeek 以外的服务商
+- **范围确认**：确认只做 OpenAI 兼容协议，不做 Anthropic 协议
+
+### Claude (AI Assistant) 的贡献
+- **代码改造**：config.py（新键 + AI_PROVIDERS 预设表 + 旧键迁移）、ai_solver.py（通用化 + normalize_api_base + thinking 门控）、executor.py（6 处调用点 + 文案）、engine.py、main.py（/api/models 探测接口）
+- **前端改造**：index.html + app.js 服务商下拉、模型 datalist 输入、检测按钮与反馈
+- **测试验证**：normalize 单测、mock 服务商端到端（双候选 URL + 答题链路）、真实启动冒烟、配置迁移与回写加密一致性校验
+- **文档更新**：README/CHANGELOG/关于弹窗/启动横幅同步 v1.7.0
+
 ## v1.6.4 (2026-07-25)
 
 - **每日练习刷新修复**：`_solve_multiple_choice` 提交答案后无条件点击刷新按钮获取下一题，不再依赖平台自动跳转（平台已取消答对自动刷新行为）。与填空题 `_solve_fill_blank` 行为对齐。

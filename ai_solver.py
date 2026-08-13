@@ -1,9 +1,10 @@
 """
-DeepSeek AI 答题模块 —— 支持选择题和填空题
+AI 答题模块 —— OpenAI 兼容协议，支持 DeepSeek/OpenAI/Kimi/通义/智谱/硅基流动等服务商
 """
 import json
 import re
 import requests
+from config import AI_PROVIDERS
 
 
 def _strip(html: str) -> str:
@@ -11,16 +12,30 @@ def _strip(html: str) -> str:
     return re.sub(r"<[^>]+>", "", html or "").strip()
 
 
-def query_deepseek(question_html: str, options: list[dict], api_key: str,
-                   base_url: str = "https://api.deepseek.com",
-                   question_type: str = "单选题",
-                   model: str = "deepseek-v4-flash") -> str | None:
+def normalize_api_base(base_url: str) -> str:
+    """规范化 API 地址：去尾斜杠；已含 /v1 /v4 等版本段则原样使用，否则补 /v1"""
+    base = (base_url or "").strip().rstrip("/")
+    if not base:
+        return ""
+    if re.search(r"/v\d+$", base, re.IGNORECASE):
+        # DashScope(.../compatible-mode/v1)、智谱(.../api/paas/v4) 等自带版本段
+        return base
+    return base + "/v1"
+
+
+def query_ai(question_html: str, options: list[dict], api_key: str,
+             base_url: str = "https://api.deepseek.com",
+             question_type: str = "单选题",
+             provider: str = "deepseek",
+             model: str = "deepseek-v4-flash") -> str | None:
     """
-    调用 DeepSeek API 获取答案（选择题）
+    调用 OpenAI 兼容 API 获取答案（选择题）
+    provider: 服务商标识，仅 deepseek 会附加 thinking 参数
     返回: 选项字母 "A"~"F"，失败返回 None
     """
-    if not api_key:
+    if not api_key or not model:
         return None
+    base_url = base_url or AI_PROVIDERS.get(provider, AI_PROVIDERS["deepseek"])["base_url"]
 
     question_text = _strip(question_html)
     option_lines = []
@@ -56,14 +71,15 @@ def query_deepseek(question_html: str, options: list[dict], api_key: str,
             "max_tokens": 800 if is_multi else 100,
             "temperature": 0.0,
         }
-        # V4 Pro 多选时不加 thinking（可能导致空响应）
-        if "v4" in model or "pro" in model.lower():
+        # DeepSeek V4/Pro 加 thinking 提升准确率；其他服务商发这些字段会 400，必须门控
+        # 多选时不加 thinking（可能导致空响应）
+        if provider == "deepseek" and ("v4" in model.lower() or "pro" in model.lower()):
             if not is_multi:
                 payload["reasoning_effort"] = "high"
                 payload["extra_body"] = {"thinking": {"type": "enabled"}}
 
         resp = requests.post(
-            f"{base_url.rstrip('/')}/v1/chat/completions",
+            f"{normalize_api_base(base_url)}/chat/completions",
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
@@ -101,7 +117,7 @@ def query_deepseek(question_html: str, options: list[dict], api_key: str,
             import time as _time
             _time.sleep(3)
             resp2 = requests.post(
-                f"{base_url.rstrip('/')}/v1/chat/completions",
+                f"{normalize_api_base(base_url)}/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json=payload, timeout=90,
             )
@@ -126,16 +142,19 @@ def query_deepseek(question_html: str, options: list[dict], api_key: str,
         return None
 
 
-def query_deepseek_fill(question_html: str, blanks_count: int, api_key: str,
-                        base_url: str = "https://api.deepseek.com",
-                        question_type: str = "填空题",
-                        model: str = "deepseek-v4-flash") -> list[str]:
+def query_ai_fill(question_html: str, blanks_count: int, api_key: str,
+                  base_url: str = "https://api.deepseek.com",
+                  question_type: str = "填空题",
+                  provider: str = "deepseek",
+                  model: str = "deepseek-v4-flash") -> list[str]:
     """
-    调用 DeepSeek API 解答填空题
+    调用 OpenAI 兼容 API 解答填空题
+    provider: 服务商标识，仅 deepseek 会附加 thinking 参数
     返回: 每个空的答案列表 ["答案1", "答案2", ...]
     """
-    if not api_key or blanks_count <= 0:
+    if not api_key or not model or blanks_count <= 0:
         return []
+    base_url = base_url or AI_PROVIDERS.get(provider, AI_PROVIDERS["deepseek"])["base_url"]
 
     question_text = _strip(question_html)
 
@@ -164,12 +183,13 @@ def query_deepseek_fill(question_html: str, blanks_count: int, api_key: str,
             "max_tokens": 1500 if "简答" in (question_type or "") else 800,
             "temperature": 0.0,
         }
-        if "v4" in model or "pro" in model.lower():
+        # DeepSeek V4/Pro 加 thinking；其他服务商发这些字段会 400，必须门控
+        if provider == "deepseek" and ("v4" in model.lower() or "pro" in model.lower()):
             payload["reasoning_effort"] = "high"
             payload["extra_body"] = {"thinking": {"type": "enabled"}}
 
         resp = requests.post(
-            f"{base_url.rstrip('/')}/v1/chat/completions",
+            f"{normalize_api_base(base_url)}/chat/completions",
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",

@@ -9,9 +9,11 @@ import asyncio
 import threading
 from datetime import datetime
 
+import requests
 from flask import Flask, render_template, request, jsonify
 
-from config import load_config, save_config
+from config import load_config, save_config, AI_PROVIDERS
+from ai_solver import normalize_api_base
 from engine import OverWallEngine
 from question_bank import load_bank, save_bank, bank_stats
 
@@ -116,7 +118,59 @@ def api_config():
             save_config(current)
         return jsonify({"code": 200, "msg": "ok"})
     cfg = load_config()
-    return jsonify({"code": 200, "data": cfg})
+    # providers 预设表放顶层（不放 data，防止 POST 合并时被写进 config.json）
+    return jsonify({"code": 200, "data": cfg, "providers": AI_PROVIDERS})
+
+
+@app.route("/api/models", methods=["POST"])
+def api_models():
+    """探测 OpenAI 兼容服务商的可用模型列表（服务端代理，避免浏览器 CORS）"""
+    body = request.get_json(silent=True) or {}
+    base_url = (body.get("base_url") or "").strip()
+    api_key = (body.get("api_key") or "").strip()
+    if not api_key:
+        return jsonify({"code": 400, "msg": "请先填写 API Key"})
+    if not base_url:
+        return jsonify({"code": 400, "msg": "请先填写 API 地址"})
+
+    # 候选 URL：规范化地址(补/v1) + 原地址各试一次，覆盖各家 /models 路径差异
+    norm = normalize_api_base(base_url)
+    raw = base_url.rstrip("/")
+    candidates = [f"{norm}/models"]
+    if norm != raw:
+        candidates.append(f"{raw}/models")
+
+    headers = {"Authorization": f"Bearer {api_key}"}
+    last_err = ""
+    for url in candidates:
+        try:
+            resp = requests.get(url, headers=headers, timeout=10)
+        except requests.exceptions.Timeout:
+            last_err = "请求服务商超时（10 秒），请检查网络后重试"
+            continue
+        except requests.exceptions.ConnectionError:
+            last_err = "无法连接 API 地址，请检查地址或网络"
+            continue
+        except Exception as e:
+            last_err = f"请求失败: {e}"
+            continue
+        if resp.status_code == 200:
+            try:
+                data = resp.json()
+            except ValueError:
+                data = {}
+            ids = sorted(m.get("id") for m in data.get("data", [])
+                         if isinstance(m, dict) and m.get("id"))
+            if ids:
+                return jsonify({"code": 200, "data": {"models": ids}})
+            last_err = "服务商返回了空模型列表"
+            continue
+        # 透传服务商错误信息（如 Invalid API key），不打印 api_key 本身
+        try:
+            last_err = resp.json().get("error", {}).get("message") or f"服务商返回 {resp.status_code}"
+        except ValueError:
+            last_err = f"服务商返回 {resp.status_code}"
+    return jsonify({"code": 500, "msg": last_err or "获取模型列表失败"})
 
 
 # ---- 状态轮询接口（前端每秒调用） ----
@@ -324,7 +378,7 @@ def api_run_module(module: str):
         return jsonify({"code": 400, "msg": "请先登录"})
 
     cfg = load_config()
-    api_key = cfg.get("deepseek_api_key", "")
+    api_key = cfg.get("ai_key", "")
     if _executor: _executor.cfg = cfg  # refresh config
     exam_index = request.args.get("index", 0, type=int)
 
@@ -495,16 +549,16 @@ if __name__ == "__main__":
     port = 15888
     print(f"""
 ╔══════════════════════════════════════╗
-║        OverWall 刷分系统 v1.6.4       ║
+║        OverWall 刷分系统 v1.7.0       ║
 ║  打开浏览器访问:                      ║
 ║  http://127.0.0.1:{port}              ║
 ╚══════════════════════════════════════╝
     """)
 
     # 检查 API 配置
-    api_key = load_config().get("deepseek_api_key", "")
+    api_key = load_config().get("ai_key", "")
     if not api_key:
-        print("[!] 未配置 DeepSeek API Key，答题模块将不可用")
+        print("[!] 未配置 AI API Key，答题模块将不可用")
         print("[!] 可通过图文学习和视频学习获取积分")
         print("[!] 请在设置页面填写 API Key 后使用答题功能\n")
 

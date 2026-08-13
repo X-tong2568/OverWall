@@ -171,6 +171,8 @@ body { display: flex; justify-content: center; align-items: flex-start; min-heig
 .checkbox-label { display: flex !important; align-items: center; gap: 8px; cursor: pointer; }
 .checkbox-label input[type="checkbox"] { width: 16px; height: 16px; margin: 0; }
 .setting-hint { font-size: 11px; color: var(--muted); margin: 4px 0 0; }
+.model-detect-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.model-detect-row .setting-hint { margin: 0; }
 .strategy-order { display: flex; flex-direction: column; gap: 4px; }
 .strategy-item { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; background: var(--surface); cursor: grab; user-select: none; }
 .theme-presets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }

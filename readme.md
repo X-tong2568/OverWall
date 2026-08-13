@@ -1,6 +1,6 @@
 # OverWall - 你有张良计 我有过墙梯
 
-> v1.6.4 — 某企业安全积分自动化脚本
+> v1.7.0 — 某企业安全积分自动化脚本
 
 ## 功能
 
@@ -16,7 +16,7 @@
 
 - **后端**: Python + Flask + Playwright
 - **前端**: 原生 HTML/CSS/JS（轮询 + 设置覆盖层）
-- **AI**: DeepSeek API（V4 Flash / V4 Pro）
+- **AI**: OpenAI 兼容 API（DeepSeek / OpenAI / Kimi / 通义千问 / 智谱 GLM / 硅基流动 / 自定义），模型列表自动检测
 - **题库**: JSON 本地存储，MD5 去重，置信度分级
 
 ## 系统兼容性
@@ -50,7 +50,7 @@ python main.py
 | `main.py` | Flask 服务入口，API 路由，工作线程管理 |
 | `engine.py` | 调度引擎，策略决策，状态管理 |
 | `executor.py` | Playwright 执行层，浏览器自动化 |
-| `ai_solver.py` | DeepSeek API 调用，题型适配提示词 |
+| `ai_solver.py` | AI API 调用（OpenAI 兼容协议，多服务商），题型适配提示词 |
 | `question_bank.py` | 题库管理，MD5 匹配，置信度系统 |
 | `config.py` | 配置加解密读写 |
 | `crypto_utils.py` | 敏感字段 XOR 加密 |
@@ -70,12 +70,13 @@ python main.py
 | deepseek-v4-flash | 45 | V4 Flash 快速 |
 | pending | 0 | 待定 |
 
-低置信度答案不会覆盖高置信度，平台正确答案永远最高优先级。
+低置信度答案不会覆盖高置信度，平台正确答案永远最高优先级。其他服务商模型名不在表中时置信度为 20（未知来源，低信任）。
 
 ## 版本演进
 
 | 版本 | 日期 | 主要变更 |
 |------|------|---------|
+| v1.7.0 | 2026-08-13 | AI 多服务商支持 + 模型自动检测 |
 | v1.6.4 | 2026-07-25 | 每日练习选择题提交后统一手动刷新，不再依赖平台自动跳转 |
 | v1.6.3 | 2026-07-25 | 模拟考试诊断日志补全，与每日练习 API 调用路径对齐 |
 | v1.6.2 | 2026-07-25 | DeepSeek 旧模型移除（chat/reasoner 停用），替换为 V4 Flash / V4 Pro，定价表更新 |

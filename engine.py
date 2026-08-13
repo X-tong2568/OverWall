@@ -125,7 +125,7 @@ class OverWallEngine:
 
             # 4. 主循环
             strategy = self.cfg.get("strategy_order", ["exercise", "article", "video"])
-            api_key = self.cfg.get("deepseek_api_key", "")
+            api_key = self.cfg.get("ai_key", "")
 
             while self._running and not self._stop_requested:
                 while self._paused and not self._stop_requested:

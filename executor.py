@@ -12,7 +12,7 @@ import io
 from playwright.async_api import async_playwright, Page, Browser
 
 from question_bank import lookup_question, record_answer
-from ai_solver import query_deepseek, query_deepseek_fill, extract_correct_from_response
+from ai_solver import query_ai, query_ai_fill, extract_correct_from_response
 
 # PyInstaller 打包后数据存到 exe 同目录，避免写入临时文件夹
 if getattr(sys, 'frozen', False):
@@ -1087,10 +1087,17 @@ class TaskExecutor:
             await self._warn(f"  提取选项异常: {e}")
             return "", []
 
+    # ---- AI 配置读取 ----
+    def _ai_params(self) -> tuple:
+        """统一读取 AI 配置：返回 (api_key, base_url, model, provider)"""
+        provider = self.cfg.get("ai_provider", "deepseek")
+        return (self.cfg.get("ai_key", ""), self.cfg.get("ai_base_url", ""),
+                self.cfg.get("ai_model", ""), provider)
+
     # ---- 选择题解答 ----
     async def _solve_multiple_choice(self, q_text: str, opts: list, qtype: str,
                                      api_key: str, submit_holder: list, result: dict):
-        """解答选择题：题库 → DeepSeek → 点击 → 提交 → 入库 → 刷新"""
+        """解答选择题：题库 → AI → 点击 → 提交 → 入库 → 刷新"""
         await self._info(f"  题型: {qtype} | 题干: {q_text[:60] if q_text else '(空)'}...")
         await self._info(f"  选项: {[o['text'][:20] for o in opts]}")
 
@@ -1098,7 +1105,7 @@ class TaskExecutor:
         if not q_text:
             await self._warn("  ⚠ 题干为空！页面元素可能已改版，无法匹配题库也无法调API")
         if not api_key:
-            await self._warn("  ⚠ API Key 为空！不会调用 DeepSeek，将默认选A")
+            await self._warn("  ⚠ API Key 为空！不会调用 AI，将默认选A")
 
         # 先登记题目到题库（答案待定）
         bank_key = ""
@@ -1107,23 +1114,23 @@ class TaskExecutor:
             if bank_key:
                 await self._info(f"  题目已登记: {bank_key[:12]}...")
 
-        # 判断答案：题库 → DeepSeek
+        # 判断答案：题库 → AI
         answer = lookup_question(q_text, opts) if q_text else None
         if answer:
             await self._info(f"  题库命中 → {answer}")
         elif q_text and api_key:
-            await self._info("  题库未命中，调用 DeepSeek...")
-            answer = query_deepseek(f"<p>{q_text}</p>", opts, api_key,
-                                    self.cfg.get("deepseek_base_url", "https://api.deepseek.com"),
-                                    question_type=qtype, model=self.cfg.get("deepseek_model", "deepseek-v4-flash"))
+            await self._info("  题库未命中，调用 AI...")
+            ai_key, ai_base, ai_model, provider = self._ai_params()
+            answer = query_ai(f"<p>{q_text}</p>", opts, ai_key, ai_base,
+                              question_type=qtype, provider=provider, model=ai_model)
             if answer:
-                await self._info(f"  DeepSeek → {answer}")
+                await self._info(f"  AI → {answer}")
             else:
-                await self._warn("  DeepSeek 返回空")
+                await self._warn("  AI 返回空")
 
         if not answer:
             if not api_key:
-                await self._warn("  未配置 DeepSeek API Key")
+                await self._warn("  未配置 AI API Key")
             answer = "A"
             await self._warn(f"  默认选{answer}")
 
@@ -1219,7 +1226,7 @@ class TaskExecutor:
                 result["wrong"] += 1
                 await self._warn(f"  ✗ 答错 选{answer} 正确{correct}")
         elif is_correct:
-            # toast显示正确 → 用DeepSeek答案入库
+            # toast显示正确 → 用 AI 答案入库
             if q_text and opts:
                 record_answer(q_text, opts, answer, source="submitAnswer")
             result["correct"] += 1
@@ -1241,11 +1248,11 @@ class TaskExecutor:
     # ---- 填空题解答 ----
     async def _solve_fill_blank(self, q_text: str, qtype: str,
                                 api_key: str, submit_holder: list, result: dict):
-        """解答填空题：DeepSeek 生成答案 → 填入 → 提交 → 入库 → 刷新"""
+        """解答填空题：AI 生成答案 → 填入 → 提交 → 入库 → 刷新"""
         await self._info(f"  题型: {qtype} | 题目: {q_text[:80]}...")
 
         if not api_key:
-            await self._warn("  填空题需要 DeepSeek API Key")
+            await self._warn("  填空题需要 AI API Key")
             refresh_btn = self.page.locator('button:has-text("刷新")').first
             if await refresh_btn.count() > 0:
                 await refresh_btn.click()
@@ -1263,19 +1270,19 @@ class TaskExecutor:
         if blank_count == 0:
             blank_count = 1
 
-        await self._info(f"  检测到 {blank_count} 个空，调用 DeepSeek...")
-        answers = query_deepseek_fill(f"<p>{q_text}</p>", blank_count, api_key,
-                                      self.cfg.get("deepseek_base_url", "https://api.deepseek.com"),
-                                      question_type=qtype, model=self.cfg.get("deepseek_model", "deepseek-v4-flash"))
+        await self._info(f"  检测到 {blank_count} 个空，调用 AI...")
+        ai_key, ai_base, ai_model, provider = self._ai_params()
+        answers = query_ai_fill(f"<p>{q_text}</p>", blank_count, ai_key, ai_base,
+                                question_type=qtype, provider=provider, model=ai_model)
 
         if not answers:
-            await self._warn("  DeepSeek 填空返回空，跳过")
+            await self._warn("  AI 填空返回空，跳过")
             refresh_btn = self.page.locator('button:has-text("刷新")').first
             if await refresh_btn.count() > 0:
                 await refresh_btn.click()
             return
 
-        await self._info(f"  DeepSeek → {answers}")
+        await self._info(f"  AI → {answers}")
 
         # 填入答案
         try:
@@ -1481,20 +1488,19 @@ class TaskExecutor:
                 if not q_text:
                     await self._warn("    ⚠ 题干为空！页面元素可能已改版，无法匹配题库也无法调API")
                 if not api_key:
-                    await self._warn("    ⚠ API Key 为空！不会调用 DeepSeek，将默认选A")
+                    await self._warn("    ⚠ API Key 为空！不会调用 AI，将默认选A")
                 answer = lookup_question(q_text, opts) if q_text else None
                 if answer:
                     await self._info(f"    题库→{answer}")
                 elif q_text and api_key:
-                    await self._info(f"    题库未命中，调用 DeepSeek...")
-                    answer = query_deepseek(f"<p>{q_text}</p>", opts, api_key,
-                                            self.cfg.get("deepseek_base_url", "https://api.deepseek.com"),
-                                            question_type=qtype_label,
-                                            model=self.cfg.get("deepseek_model", "deepseek-v4-flash"))
+                    await self._info(f"    题库未命中，调用 AI...")
+                    ai_key, ai_base, ai_model, provider = self._ai_params()
+                    answer = query_ai(f"<p>{q_text}</p>", opts, ai_key, ai_base,
+                                      question_type=qtype_label, provider=provider, model=ai_model)
                     if answer:
-                        await self._info(f"    DeepSeek→{answer}")
+                        await self._info(f"    AI→{answer}")
                     else:
-                        await self._warn("    DeepSeek 返回空")
+                        await self._warn("    AI 返回空")
                 if not answer:
                     await self._warn(f"    无答案来源，默认{'全选ABCD' if is_multi else '选A'}")
                 if is_multi:
@@ -1553,7 +1559,7 @@ class TaskExecutor:
                 result["total"] += 1
                 result["correct"] += 1
                 if q_text:
-                    record_answer(q_text, opts, answer, source=self.cfg.get('deepseek_model', 'deepseek-v4-flash'))
+                    record_answer(q_text, opts, answer, source=self.cfg.get('ai_model', ''))
                 skip_streak = 0
             else:
                 # ---- 填空题 ----
@@ -1572,11 +1578,11 @@ class TaskExecutor:
                     }}""", qi)
                     fill_type = "简答题" if has_textarea else "填空题"
                     await self._info(f"  题[{qi+1}] {fill_type}: {q_text[:40]}...")
-                    answers = query_deepseek_fill(f"<p>{q_text}</p>", blanks, api_key,
-                                                  self.cfg.get("deepseek_base_url", "https://api.deepseek.com"),
-                                                  question_type=fill_type, model=self.cfg.get("deepseek_model", "deepseek-v4-flash"))
+                    ai_key, ai_base, ai_model, provider = self._ai_params()
+                    answers = query_ai_fill(f"<p>{q_text}</p>", blanks, ai_key, ai_base,
+                                            question_type=fill_type, provider=provider, model=ai_model)
                     if answers:
-                        await self._info(f"    DeepSeek→{answers}")
+                        await self._info(f"    AI→{answers}")
                         # 逐个填入（用列表参数避免多参数报错）
                         for bi, ans in enumerate(answers[:blanks]):
                             await self.page.evaluate("""([idx, blankIdx, text]) => {
@@ -1592,15 +1598,13 @@ class TaskExecutor:
                         result["correct"] += 1
                         # 录题库
                         if q_text:
-                            record_answer(q_text, [], answers[0] if len(answers) == 1 else "||".join(answers), source=self.cfg.get('deepseek_model', 'deepseek-v4-flash'))
+                            record_answer(q_text, [], answers[0] if len(answers) == 1 else "||".join(answers), source=self.cfg.get('ai_model', ''))
                         skip_streak = 0
                     else:
                         # 重试一次
                         await asyncio.sleep(1)
-                        answers = query_deepseek_fill(f"<p>{q_text}</p>", blanks, api_key,
-                                                      self.cfg.get("deepseek_base_url", "https://api.deepseek.com"),
-                                                      question_type=fill_type,
-                                                      model=self.cfg.get("deepseek_model", "deepseek-v4-flash"))
+                        answers = query_ai_fill(f"<p>{q_text}</p>", blanks, ai_key, ai_base,
+                                                question_type=fill_type, provider=provider, model=ai_model)
                         if answers:
                             await self._info(f"    重试成功→{answers}")
                             for bi, ans in enumerate(answers[:blanks]):
@@ -1617,7 +1621,7 @@ class TaskExecutor:
                             skip_streak = 0
                         else:
                             skip_streak += 1
-                            await self._warn(f"  题[{qi+1}] DeepSeek填空失败(已重试)")
+                            await self._warn(f"  题[{qi+1}] AI填空失败(已重试)")
                 else:
                     skip_streak += 1
                     await self._warn(f"  题[{qi+1}] 无选项无输入，跳过")

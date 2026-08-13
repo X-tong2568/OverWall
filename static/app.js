@@ -200,12 +200,36 @@
     fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({strategy_order:["article","video","exercise"],weekly_target:30,headless:false,theme:themePresets.porcelain})}).then(function(){loadSettings();applyTheme(themePresets.porcelain);});
   });
 
+  // AI 服务商预设表缓存（首次从 /api/config 拉取）
+  var PROVIDERS = null;
+
   function loadSettings() {
     fetch("/api/config").then(function(r){return r.json();}).then(function(resp){
       var c=resp.data;if(!c)return;
+      // 首次加载服务商下拉并绑定切换事件（只绑一次，避免每次打开设置重复绑）
+      if (resp.providers && !PROVIDERS) {
+        PROVIDERS = resp.providers;
+        var psel = $("#cfgProvider");
+        psel.innerHTML = "";
+        Object.keys(PROVIDERS).forEach(function(k){
+          var op=document.createElement("option");
+          op.value=k;op.textContent=PROVIDERS[k].label;
+          psel.appendChild(op);
+        });
+        psel.addEventListener("change", function(){
+          var p=PROVIDERS[this.value];if(!p)return;
+          $("#cfgApiBase").value=p.base_url||"";
+          $("#cfgModel").placeholder=p.model_hint||"";
+        });
+      }
       $("#cfgBaseUrl").value=c.base_url||"";$("#cfgUsername").value=c.username||"";$("#cfgPassword").value=c.password||"";
-      $("#cfgApiKey").value=c.deepseek_api_key||"";$("#cfgApiBase").value=c.deepseek_base_url||"https://api.deepseek.com";
-      $("#cfgModel").value=c.deepseek_model||"deepseek-v4-flash";$("#cfgTarget").value=c.weekly_target||30;
+      var prov=(PROVIDERS&&PROVIDERS[c.ai_provider])?c.ai_provider:"deepseek";
+      $("#cfgProvider").value=prov;
+      $("#cfgApiKey").value=c.ai_key||c.deepseek_api_key||"";
+      $("#cfgApiBase").value=c.ai_base_url||c.deepseek_base_url||"https://api.deepseek.com";
+      $("#cfgModel").value=c.ai_model||c.deepseek_model||"";
+      $("#cfgModel").placeholder=((PROVIDERS&&PROVIDERS[prov])?PROVIDERS[prov].model_hint:"")||"";
+      $("#cfgTarget").value=c.weekly_target||30;
       $("#cfgHeadless").checked=c.headless||false;
       updateMockExamButton();
       // 按配置的策略顺序重排 UI
@@ -220,14 +244,46 @@
   }
 
   function saveSettings() {
+    var prov=$("#cfgProvider").value||"deepseek";
     fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
       base_url:$("#cfgBaseUrl").value.trim(),username:$("#cfgUsername").value.trim(),password:$("#cfgPassword").value,
-      deepseek_api_key:$("#cfgApiKey").value.trim(),deepseek_base_url:$("#cfgApiBase").value.trim()||"https://api.deepseek.com",
-      deepseek_model:$("#cfgModel").value||"deepseek-v4-flash",weekly_target:parseInt($("#cfgTarget").value)||30,
+      ai_provider:prov,ai_key:$("#cfgApiKey").value.trim(),
+      ai_base_url:$("#cfgApiBase").value.trim()||((PROVIDERS&&PROVIDERS[prov])?PROVIDERS[prov].base_url:""),
+      ai_model:$("#cfgModel").value.trim(),weekly_target:parseInt($("#cfgTarget").value)||30,
       headless:$("#cfgHeadless").checked,strategy_order:getStrategyOrder(),
       theme:{accent:$("#colorAccent").value,bg:$("#colorBg").value,text:$("#colorText").value,surface:$("#colorSurface").value}
     })}).then(function(){applyTheme({accent:$("#colorAccent").value,bg:$("#colorBg").value,text:$("#colorText").value,surface:$("#colorSurface").value});});
   }
+
+  // ===== AI 模型自动检测 =====
+  $("#btnDetectModels").addEventListener("click", function(){
+    var prov=PROVIDERS&&PROVIDERS[$("#cfgProvider").value];
+    var base=$("#cfgApiBase").value.trim()||(prov?prov.base_url:"");
+    var key=$("#cfgApiKey").value.trim();
+    var btn=this,msg=$("#modelDetectMsg");
+    btn.disabled=true;btn.textContent="检测中...";msg.textContent="";
+    fetch("/api/models",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({base_url:base,api_key:key})})
+      .then(function(r){return r.json();})
+      .then(function(resp){
+        btn.disabled=false;btn.textContent="检测模型";
+        if(resp.code===200&&resp.data&&resp.data.models&&resp.data.models.length){
+          var dl=$("#cfgModelList");
+          dl.innerHTML="";
+          resp.data.models.forEach(function(m){
+            var op=document.createElement("option");
+            op.value=m;dl.appendChild(op);
+          });
+          msg.textContent="检测到 "+resp.data.models.length+" 个模型";
+          if(!$("#cfgModel").value)$("#cfgModel").value=resp.data.models[0];
+        }else{
+          msg.textContent=resp.msg||"检测失败";
+        }
+      })
+      .catch(function(){
+        btn.disabled=false;btn.textContent="检测模型";
+        msg.textContent="网络错误，请重试";
+      });
+  });
 
   // ===== 策略拖拽 =====
   function initDrag(){

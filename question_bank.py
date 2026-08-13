@@ -107,6 +107,8 @@ def lookup_question(question_html: str, current_options: list[dict]) -> str | No
 
 
 # 来源置信度：数字越高越可信
+# deepseek* 键保留：老题库里存的 source 字符串需要继续匹配
+# 多服务商后 source 是各家的模型名，查不到时默认 20（不会覆盖已有高置信度答案）
 SOURCE_CONFIDENCE = {
     "submitAnswer": 100,  # 平台判定，绝对正确
     "deepseek-v4-pro": 80,
@@ -120,7 +122,7 @@ def record_answer(question_html: str, options: list[dict],
                   correct_answer: str = "", source: str = "submitAnswer") -> str:
     """
     记录一道题到题库。只有在置信度 >= 已有记录时才更新答案。
-    这样平台判定 > V4 Pro > R1 > V3，防止低置信度答案覆盖高置信度。
+    这样平台判定 > V4 Pro > V4 Flash > 未知来源(20)，防止低置信度答案覆盖高置信度。
     """
     q_hash = _hash_text(question_html)
     bank = load_bank()
