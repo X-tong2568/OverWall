@@ -11,7 +11,7 @@ import zipfile
 import io
 from playwright.async_api import async_playwright, Page, Browser
 
-from question_bank import lookup_question, record_answer
+from question_bank import lookup_question, record_answer, split_option_text, letters_to_content
 from ai_solver import query_ai, query_ai_fill, extract_correct_from_response
 
 # PyInstaller 打包后数据存到 exe 同目录，避免写入临时文件夹
@@ -1075,11 +1075,14 @@ class TaskExecutor:
             for i, opt in enumerate(raw):
                 label = chr(ord("A") + i)
                 el = self.page.locator(f'[data-ow-opt="{label}"]')
+                # 拆出平台显示的字母 + 纯内容（内容锚定用，平台会打乱选项顺序）
+                display_letter, content = split_option_text(opt["text"])
                 options.append({
                     "element": el,
-                    "text": opt["text"],
-                    "wfLineOption": label,
-                    "wfLineContent": opt["text"],
+                    "text": opt["text"],              # 原始文本（含平台标签，用于日志）
+                    "display_letter": display_letter,  # 平台显示的字母（若有）
+                    "wfLineOption": label,            # 我们的位置字母
+                    "wfLineContent": content,         # 纯内容（喂 AI / 入库锚定）
                 })
 
             return question, options
@@ -1210,25 +1213,40 @@ class TaskExecutor:
             except Exception:
                 pass
 
-        # 记录结果 + 更新题库
-        if correct:
-            # ✅ 系统返回了正确答案 → 更新题库
-            if q_text and opts:
-                record_answer(q_text, opts, correct, source="submitAnswer")
-                await self._info(f"  题库已更新: {correct}")
+        # 记录结果 + 更新题库（内容锚定：平台会打乱选项顺序，字母不可靠）
+        # 把「我们点的字母」还原成选项内容
+        clicked_content = letters_to_content(answer, opts) if opts else ""
 
-            if correct.upper() == answer.upper():
+        # 内容相等判定（多选用集合比较，与顺序无关）
+        def _same_content(a: str, b: str) -> bool:
+            return bool(a) and bool(b) and set(a.split("||")) == set(b.split("||"))
+
+        if correct:
+            # trueAnswer 字母坐标系未知：优先按平台显示字母还原内容，其次按我们的位置字母
+            correct_content = letters_to_content(str(correct), opts, prefer_display=True) if opts else str(correct)
+            # 系统返回了正确答案 → 更新题库（入库前会再转一次内容锚定）
+            if q_text and opts:
+                record_answer(q_text, opts, correct_content, source="submitAnswer")
+                await self._info(f"  题库已更新: {correct_content}")
+
+            # 判定对错：能还原成内容就按内容比，否则退回字母比
+            if _same_content(clicked_content, correct_content):
+                result["correct"] += 1
+                result["points"] += 1
+                self._add_today_exercise_point()
+                await self._info(f"  ✓ 答对! ({correct_content})")
+            elif str(correct).strip().upper() == str(answer).strip().upper():
                 result["correct"] += 1
                 result["points"] += 1
                 self._add_today_exercise_point()
                 await self._info(f"  ✓ 答对! ({correct})")
             else:
                 result["wrong"] += 1
-                await self._warn(f"  ✗ 答错 选{answer} 正确{correct}")
+                await self._warn(f"  ✗ 答错 选{clicked_content or answer} 正确{correct_content or correct}")
         elif is_correct:
-            # toast显示正确 → 用 AI 答案入库
+            # toast显示正确 → 我们点的内容就是正确答案
             if q_text and opts:
-                record_answer(q_text, opts, answer, source="submitAnswer")
+                record_answer(q_text, opts, clicked_content or answer, source="submitAnswer")
             result["correct"] += 1
             result["points"] += 1
             self._add_today_exercise_point()
@@ -1680,8 +1698,11 @@ class TaskExecutor:
             for i, opt in enumerate(raw):
                 label = chr(ord("A") + i)
                 el = self.page.locator(f'[data-ow-opt="{label}"]')
+                # 拆出平台显示的字母 + 纯内容（内容锚定用）
+                display_letter, content = split_option_text(opt["text"])
                 opts.append({"element": el, "text": opt["text"],
-                             "wfLineOption": label, "wfLineContent": opt["text"]})
+                             "display_letter": display_letter,
+                             "wfLineOption": label, "wfLineContent": content})
 
             return question, opts
         except Exception as e:

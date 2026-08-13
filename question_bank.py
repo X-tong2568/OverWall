@@ -43,12 +43,78 @@ def save_bank(bank: dict) -> None:
         json.dump(bank, f, ensure_ascii=False, indent=2)
 
 
+def split_option_text(text: str) -> tuple[str | None, str]:
+    """
+    拆解选项文本为 (平台显示字母, 纯内容)。
+    兼容多层前缀：'A. [图标]\\nA、\\n\\n内容'（我们加的字母+平台图标+平台字母）、
+    'A. A\\n\\n内容'、'A. 内容'、'内容'。
+    字母后必须紧跟换行才视为标签，避免误伤以字母开头的内容。
+    """
+    t = (text or "").strip()
+    # 1. 剥掉字母+点号前缀，最多 2 层（我们加的外层 + 平台自己的标签，如 'A. A.  正确'）。
+    #    只认字母+点号：平台用顿号，若这里也认顿号会把 'B、错' 误当我们的前缀剥掉
+    for _ in range(2):
+        m = re.match(r"^([A-F])\s*\.\s+", t)
+        if not m:
+            break
+        t = t[m.end():]
+        # 层间可能夹平台图标字体和空白
+        t = re.sub(r"^[\ue000-\uf8ff\s]+", "", t)
+    # 2. 剥掉平台图标字体（私有区字符 \ue000-\uf8ff）和首部空白
+    t = re.sub(r"^[\ue000-\uf8ff\s]+", "", t)
+    # 3. 平台显示的字母标签：字母(+分隔符)+换行
+    display_letter = None
+    m2 = re.match(r"^([A-FＡ-Ｆ])\s*[\.\、\．:：]?\s*\n+", t)
+    if m2:
+        display_letter = m2.group(1).upper()
+        t = t[m2.end():]
+        t = re.sub(r"^[\ue000-\uf8ff\s]+", "", t)
+    return display_letter, t.strip()
+
+
+def letters_to_content(answer: str, options: list[dict], prefer_display: bool = False) -> str:
+    """
+    字母答案转成选项纯内容文本（多选用 '||' 连接，比较时拆集合即可）。
+    prefer_display=True 时优先按平台显示的字母定位（用于平台 trueAnswer 的字母坐标系），
+    找不到显示字母再按位置定位。无法还原时原样返回。
+    """
+    a = (answer or "").strip().upper()
+    if not options or not re.fullmatch(r"[A-F]{1,6}", a):
+        return answer
+    contents = []
+    for letter in a:
+        target = None
+        if prefer_display:
+            for opt in options:
+                if isinstance(opt, dict) and (opt.get("display_letter") or "").upper() == letter:
+                    target = opt
+                    break
+        if target is None:
+            idx = ord(letter) - ord("A")
+            if idx >= len(options):
+                return answer
+            target = options[idx]
+        if not isinstance(target, dict):
+            return answer
+        raw = target.get("wfLineContent", target.get("text", ""))
+        _, content = split_option_text(raw)
+        if not content:
+            return answer
+        contents.append(content)
+    return "||".join(contents)
+
+
+def _norm_content(text: str) -> str:
+    """内容比较用归一化：去所有空白"""
+    return re.sub(r"\s+", "", text or "")
+
+
 def lookup_question(question_html: str, current_options: list[dict]) -> str | None:
     """
-    根据题目文本在题库中查找已知答案，自动适配选项顺序变化。
-    原理：题库存的是"正确答案的文本内容"，返回时映射到当前页面的选项字母。
-    例如题库存 answer="B"，options=["A.CO","B.NH3","C.O2"]，
-    如果当前页面选项是 ["A.O2","B.CO","C.NH3"]，则返回 "C"（因为 NH3 现在是 C）。
+    根据题目文本在题库中查找已知答案。锚定的是选项内容不是字母序号：
+    - 新记录存内容文本；旧记录存字母（用存储时的选项列表还原内容）
+    - 内容与当前选项匹配后，返回当前的字母
+    - 匹配不到返回 None（让 AI 现解，绝不按位置瞎猜——平台会打乱选项顺序）
     """
     q_hash = _hash_text(question_html)
     bank = load_bank()
@@ -60,50 +126,46 @@ def lookup_question(question_html: str, current_options: list[dict]) -> str | No
     if entry.get("source") == "pending" and not entry.get("answer"):
         return None
 
-    stored_answer = entry["answer"]  # 例如 "B" 或 "ABD" (多选)
-    stored_options = entry.get("options", [])  # 例如 ["A. CO", "B. NH3", "C. O2"]
+    stored_answer = entry["answer"]
+    stored_options = entry.get("options", [])
 
-    # 提取当前页面选项的纯文本
     def _opt_content(opt):
-        """提取选项的纯文本内容"""
+        """提取选项的原始文本"""
         if isinstance(opt, dict):
-            return re.sub(r"<[^>]+>", "", opt.get("wfLineContent", opt.get("text", ""))).strip()
-        return str(opt).strip()
+            return opt.get("wfLineContent", opt.get("text", ""))
+        return str(opt)
 
-    current_texts = [_opt_content(o) for o in current_options]
+    # 旧数据：答案还是字母 → 用存储时的选项列表还原出内容
+    if re.fullmatch(r"[A-F]{1,6}", stored_answer.strip().upper()):
+        targets = []
+        for letter in stored_answer.strip().upper():
+            idx = ord(letter) - ord("A")
+            if idx >= len(stored_options):
+                return None  # 旧数据缺选项，无法还原
+            _, content = split_option_text(stored_options[idx])
+            if not content:
+                return None
+            targets.append(content)
+    else:
+        # 新数据：答案就是内容（多选 '||' 连接）
+        targets = [t for t in stored_answer.split("||") if t.strip()]
 
-    # 对每个存储的答案字母，找到对应的选项文本，再在当前选项中匹配
-    result_letters = []
-    for letter in stored_answer.upper():
-        if letter < 'A' or letter > 'F':
-            result_letters.append(letter)
+    # 解析当前选项并与内容归一化匹配
+    current_parsed = [split_option_text(_opt_content(o)) for o in current_options]
+    result = []
+    for target in targets:
+        t_norm = _norm_content(target)
+        if not t_norm:
             continue
-        # 从存储选项中找这个字母对应的文本
-        stored_idx = ord(letter) - ord('A')
-        stored_text = ""
-        if stored_idx < len(stored_options):
-            # 提取存储选项的纯文本（去掉 "A. " 前缀）
-            stored_text = stored_options[stored_idx]
-            # 去掉选项字母前缀，如 "A. CO" → "CO"
-            stored_text = re.sub(r"^[A-F][\.\、]\s*", "", stored_text).strip()
-
-        # 在当前选项中找匹配文本
-        matched_letter = None
-        for ci, ct in enumerate(current_texts):
-            # 去掉选项字母前缀后比较
-            ct_clean = re.sub(r"^[A-F][\.\、]\s*", "", ct).strip()
-            if ct_clean and stored_text and ct_clean == stored_text:
-                matched_letter = chr(ord('A') + ci)
+        matched = None
+        for i, (_, ct) in enumerate(current_parsed):
+            if ct and _norm_content(ct) == t_norm:
+                matched = chr(ord("A") + i)
                 break
-
-        if matched_letter:
-            result_letters.append(matched_letter)
-        else:
-            # 文本匹配失败，回退到按字母顺序（选项顺序没变的情况）
-            if stored_idx < len(current_options):
-                result_letters.append(chr(ord('A') + stored_idx))
-
-    return "".join(result_letters)
+        if matched:
+            result.append(matched)
+        # 匹配失败直接放弃该内容，不按位置猜
+    return "".join(result) if result else None
 
 
 # 来源置信度：数字越高越可信
@@ -123,10 +185,15 @@ def record_answer(question_html: str, options: list[dict],
     """
     记录一道题到题库。只有在置信度 >= 已有记录时才更新答案。
     这样平台判定 > V4 Pro > V4 Flash > 未知来源(20)，防止低置信度答案覆盖高置信度。
+    答案入库前先做内容锚定：字母 → 选项纯内容（平台会打乱选项顺序，字母不可靠）。
     """
     q_hash = _hash_text(question_html)
     bank = load_bank()
     is_new = q_hash not in bank.get("questions", {})
+
+    # 内容锚定：字母答案转成选项内容文本，已内容则原样（多选 '||' 连接）
+    if correct_answer and options:
+        correct_answer = letters_to_content(correct_answer, options)
 
     option_texts = []
     for opt in options:

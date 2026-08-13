@@ -67,8 +67,8 @@ def query_ai(question_html: str, options: list[dict], api_key: str,
             msgs.insert(0, {"role": "system", "content": "你是煤矿安全考试助手，只回复正确选项字母。"})
         payload = {
             "model": model,
-            "messages": msgs,
-            "max_tokens": 800 if is_multi else 100,
+            # thinking 模型的思考 token 也计入 max_tokens，预算太小会被截断导致答案缺失/半截
+            "max_tokens": 1200 if is_multi else 500,
             "temperature": 0.0,
         }
         # DeepSeek V4/Pro 加 thinking 提升准确率；其他服务商发这些字段会 400，必须门控
@@ -180,7 +180,8 @@ def query_ai_fill(question_html: str, blanks_count: int, api_key: str,
                 {"role": "system", "content": "你是一个精准的煤矿安全考试答题助手。"},
                 {"role": "user", "content": prompt},
             ],
-            "max_tokens": 1500 if "简答" in (question_type or "") else 800,
+            # thinking 模型的思考 token 也计入 max_tokens，预算太小会被截断
+            "max_tokens": 2000 if "简答" in (question_type or "") else 1200,
             "temperature": 0.0,
         }
         # DeepSeek V4/Pro 加 thinking；其他服务商发这些字段会 400，必须门控
