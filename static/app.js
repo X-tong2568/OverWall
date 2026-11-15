@@ -121,41 +121,10 @@
   $("#clearLogBtn").addEventListener("click", function(){domLogContainer.innerHTML='<div class="log-placeholder">日志已清空...</div>';logCount=0;seenKeys.clear();});
 
   // ===== 模块按钮 =====
-  function updateMockExamButton() {
-    var headless = $("#cfgHeadless") && $("#cfgHeadless").checked;
-    var btn = $("#btnMockExam");
-    if (!btn) return;
-    if (headless) {
-      btn.disabled = true;
-      btn.style.opacity = "0.4";
-      btn.style.cursor = "not-allowed";
-      btn.title = "无头模式下模拟考试不可用（需可视化交互）";
-    } else {
-      btn.disabled = false;
-      btn.style.opacity = "1";
-      btn.style.cursor = "pointer";
-      btn.title = "";
-    }
-  }
-
-  // 无头模式切换时同步更新模拟考试按钮状态
-  var cfgHeadlessEl = $("#cfgHeadless");
-  if (cfgHeadlessEl) {
-    cfgHeadlessEl.addEventListener("change", updateMockExamButton);
-  }
-
   $$(".btn-module").forEach(function(btn){
     btn.addEventListener("click", function(){
       if (engineRunning) { addLog("--:--:--","warn","任务执行中"); return; }
-      var mod = btn.dataset.module;
-      if (mod === "mock_exam") {
-        if ($("#cfgHeadless") && $("#cfgHeadless").checked) { addLog("--:--:--","warn","无头模式禁用模拟考试"); return; }
-        if (!confirm("模拟考试需要手动签名。确定？")) return;
-        fetch("/api/exam_list",{method:"POST"}).then(function(r){return r.json();}).then(function(resp){
-          if (resp.code===200 && resp.exams) showExamList(resp.exams);
-        }); return;
-      }
-      runModule(mod);
+      runModule(btn.dataset.module);
     });
   });
 
@@ -170,22 +139,12 @@
     });
   }
 
-  function runModule(mod, extra) {
+  function runModule(mod) {
     engineRunning = true;
     $$(".btn-module").forEach(function(b){b.disabled=true;b.style.opacity="0.5";});
-    var url = "/api/run/"+mod; if (extra!==undefined) url += "?index="+extra;
-    fetch(url,{method:"POST"}).then(function(r){return r.json();}).then(function(resp){
+    fetch("/api/run/"+mod,{method:"POST"}).then(function(r){return r.json();}).then(function(resp){
       if (resp.code !== 200) addLog("--:--:--","warn",resp.msg);
     });
-  }
-
-  function showExamList(exams) {
-    var bar = $("#examListBar"); bar.innerHTML='<span style="font-size:12px;color:var(--muted);margin-right:8px;">选择考试:</span>'; bar.style.display="flex";
-    exams.forEach(function(ex,i){
-      var b=document.createElement("button");b.className="btn btn-sm btn-module";b.textContent=(i+1)+". "+ex.name.substring(0,20);
-      b.title=ex.name;b.addEventListener("click",function(){bar.style.display="none";runModule("mock_exam",i);});bar.appendChild(b);
-    });
-    var c=document.createElement("button");c.className="btn btn-sm btn-ghost";c.textContent="取消";c.addEventListener("click",function(){bar.style.display="none";});bar.appendChild(c);
   }
 
   // ===== 设置覆盖层 =====
@@ -231,7 +190,6 @@
       $("#cfgModel").placeholder=((PROVIDERS&&PROVIDERS[prov])?PROVIDERS[prov].model_hint:"")||"";
       $("#cfgTarget").value=c.weekly_target||30;
       $("#cfgHeadless").checked=c.headless||false;
-      updateMockExamButton();
       // 按配置的策略顺序重排 UI
       var order=c.strategy_order||["article","video","exercise"];
       var ct=$("#strategyOrder");if(ct){

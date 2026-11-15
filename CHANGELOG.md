@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.8.0 (2026-11-16)
+
+- **平台新版学习中心适配**：平台把「推荐 / 集团课程 / 单位课程 / 案例学习」重写为统一的 `user-study/index.html?tab=1/2/3/4` 页面，旧卡片点击和触屏懒加载全部失效
+  - 新增页面内接口取列表：推荐 `getStudyInfo`、集团/单位/事故案例 `getSourceCourse`，按 `is_learned / isLearned` 跳过已学，支持分页翻页
+  - 仍然通过真实详情页学习：推荐 `detail-command.html`、课程 `courseDetail.html`，走平台自己的播放、倒计时、保存进度接口
+  - 视频页自动点播放，PDF/图片/音频由平台自动计时；完成判断改为读 `.text-dura / .rest-time / .head-dura`
+  - 保留内容 ID 全局去重、分类回退链、随机节流，降低触发风控的概率
+  - 入口与卡片优先按真人路径点击：积分页 → 去学习 → 学习中心 tab → 分类 → 卡片；翻页后不在当前列表的卡片才回退 URL
+  - 某分类没有未学内容时明确提示并结束，不再每 15 秒空转重试
+- **每日练习适配**：平台把「刷新」按钮改名为「下一题」（`.ue-refresh-btn`），新增简答题（`.ue-essay-input`），错题标记改为 `.ue-option-correct / .ue-option-wrong`
+  - 提交/下一题/简答题全部适配；填空题判定改为按接口 `wfAnswer` 判对错，不再乐观计分
+  - 修复题干误抓页面顶部 `.title`（「每日练习」）导致 AI 拿到空题的问题
+- **登录适配**：新版登录页账号框 `name=userCode`，登录必须点 `#tgit-app-login-btn-sub`，按 Enter 不再提交
+- **中途停止修复**：停止任务时浏览器已关闭，但学习循环仍在访问页面，出现 `NoneType ... evaluate` 报错；手动模块停止后还会空等 15 秒，导致页面提示「上一个任务还在执行中」。现在手动模块使用局部 executor 引用、停止后立即 break，学习等待检测到页面关闭直接返回，实测停止后 worker 约 1 秒释放
+- **AI 答题关键修复**：`query_ai` 请求体漏传 `messages` 字段，DeepSeek 返回 422，异常被吞后长期表现为「AI 返回空 → 默认选 A」。补上后单选/多选/判断/填空/简答均实测可用
+- **实测验证**：完成推荐文章 58 秒计时并保存、每日练习 3 分（单选/判断题，AI 作答 + 平台判分 + 下一题）、单位课程详情页加载与已学判断、AI 四种题型调用
+
 ## v1.7.1 (2026-08-13)
 
 - **题库内容锚定修复（选项乱序答错）**：平台会打乱同一道题的选项顺序，旧实现把字母答案按位置存库、匹配失败时静默按位置猜，导致乱序后「只会选之前的选项」、错误率飙升
@@ -11,15 +28,6 @@
 - **AI token 预算提高**：单选 100→500、多选 800→1200、填空 800→1200、简答 1500→2000。thinking 模型的思考 token 也计入 max_tokens，预算太小会把答案截断导致空响应/半截答案
 - **验证**：真实题库 42 条乱序回归 40/40 通过（2 条填空题内容答案跳过）+ 10 项单元测试通过
 
-### XTong 的贡献
-- **Bug 反馈**：发现选项顺序变化后只选之前的选项、错误率升高，指出最初设计锚定的是选项内容而非序号；补充反馈 API 返回答案错误率高、怀疑 token 限制太少
-
-### Claude (AI Assistant) 的贡献
-- **根因定位**：dump 真实题库数据发现双层标签结构（位置字母 + 平台图标 + 平台字母 + 内容），定位位置回退是乱序答错的毒瘤
-- **代码修复**：question_bank.py 内容锚定重写、executor.py 提取与判定内容化、ai_solver.py token 预算提高
-- **测试验证**：真实题库乱序回归 + 单元测试 + 启动冒烟
-- **文档更新**：CHANGELOG 同步 v1.7.1
-
 ## v1.7.0 (2026-08-13)
 
 - **AI 多服务商支持**：不再只支持 DeepSeek，改为 OpenAI 兼容协议一套代码覆盖 DeepSeek / OpenAI / Kimi（月之暗面）/ 通义千问（DashScope）/ 智谱 GLM / 硅基流动 + 自定义地址。设置页新增服务商下拉，切换自动填充默认 API 地址
@@ -29,38 +37,14 @@
 - **URL 规范化**：新增 `normalize_api_base()`，兼容 base 地址自带版本段的服务商（DashScope `compatible-mode/v1`、智谱 `paas/v4`）
 - **服务端模型探测接口**：新增 `POST /api/models`，服务端代理请求避免浏览器 CORS，错误文案中文透传
 
-### XTong 的贡献
-- **需求提出**：要求模型列表自动检测 + 自选模型，支持 DeepSeek 以外的服务商
-- **范围确认**：确认只做 OpenAI 兼容协议，不做 Anthropic 协议
-
-### Claude (AI Assistant) 的贡献
-- **代码改造**：config.py（新键 + AI_PROVIDERS 预设表 + 旧键迁移）、ai_solver.py（通用化 + normalize_api_base + thinking 门控）、executor.py（6 处调用点 + 文案）、engine.py、main.py（/api/models 探测接口）
-- **前端改造**：index.html + app.js 服务商下拉、模型 datalist 输入、检测按钮与反馈
-- **测试验证**：normalize 单测、mock 服务商端到端（双候选 URL + 答题链路）、真实启动冒烟、配置迁移与回写加密一致性校验
-- **文档更新**：README/CHANGELOG/关于弹窗/启动横幅同步 v1.7.0
-
 ## v1.6.4 (2026-07-25)
 
 - **每日练习刷新修复**：`_solve_multiple_choice` 提交答案后无条件点击刷新按钮获取下一题，不再依赖平台自动跳转（平台已取消答对自动刷新行为）。与填空题 `_solve_fill_blank` 行为对齐。
-
-### XTong 的贡献
-- **Bug 反馈**：发现每日练习答对后不自动跳转下一题，定位到刷新按钮逻辑缺失
-
-### Claude (AI Assistant) 的贡献
-- **Bug 修复**：`_solve_multiple_choice` 刷新逻辑改为无条件手动刷新，与 `_solve_fill_blank` 对齐
-- **文档更新**：README/CHANGELOG/关于弹窗/启动横幅同步 v1.6.4
 
 ## v1.6.3 (2026-07-25)
 
 - **模拟考试诊断日志补全**：`do_mock_exam` 答题循环新增题干为空 / API Key 为空的诊断警告，与每日练习 `_solve_multiple_choice` 的诊断日志保持一致
 - **API 调用路径对齐**：模拟考试和每日练习的 DeepSeek 调用统一使用 `query_deepseek` 同一路径
-
-### XTong 的贡献
-- **需求提出**：要求模拟考试诊断日志与每日练习对齐
-
-### Claude (AI Assistant) 的贡献
-- **代码补全**：模拟考试诊断日志 + API 路径对齐
-- **文档更新**：README 版本演进表同步
 
 ## v1.6.2 (2026-07-25)
 
@@ -69,24 +53,12 @@
 - **定价表更新**：前端定价表、README 置信度表与实际 API 价格对齐
 - **全量兜底替换**：`config.py`、`executor.py`、`ai_solver.py`、`static/app.js`、`question_bank.py` 共 7 处 `deepseek-chat` 默认值/兜底值全部替换
 
-### XTong 的贡献
-- **模型跟进**：关注 DeepSeek 官方动态，发现 chat/reasoner 停用并要求更新
-
-### Claude (AI Assistant) 的贡献
-- **全面清理**：7 个文件、15+ 处引用逐一替换，定价/置信度/文档/UI 同步更新
-- **文档更新**：README/CHANGELOG/关于弹窗/启动横幅同步 v1.6.2
-
 ## v1.6.1 (2026-07-24)
 
 - **答题只选 A 修复**：`query_deepseek` 的 `reasoning_content` 提取逻辑从仅多选扩展到单选+多选，V4/Pro 模型开启 thinking 后 `content` 为空时也能从推理文本中捞出答案字母
 - **seen_ids 变量名修复**：`_click_article_card` 第 622 行 `seen_ids` → `self._seen_courseids`，修复 v1.6.0 重构遗漏导致的 NameError 崩溃
 - **选择器兜底增强**：`_extract_options` 选项提取新增 `.option-item, .answer-item, li[class*="option"]` 兜底，题干提取新增 `h3, h4, .title, .subject-text` 等选择器，防止平台改版后取不到题目
 - **诊断日志**：`_solve_multiple_choice` 新增题干为空 / API Key 为空时的明确警告
-
-### Claude (AI Assistant) 的贡献
-- **Bug 排查**：追踪整条答题链路定位两层故障（reasoning_content 单选丢失 + 变量名遗漏）
-- **代码修复**：ai_solver.py reasoning_content 单选提取、executor.py seen_ids 修复 + 选择器兜底 + 诊断日志
-- **文档更新**：README/CHANGELOG/关于弹窗/启动横幅同步 v1.6.1
 
 ## v1.6.0 (2026-07-21)
 
@@ -99,20 +71,10 @@
 - **单位课程**：实测确认平台名称为"单位课程"并修正匹配，`asyncio` 导入缺失修复
 - **去事故案例重复**：实测事故案例与案例学习(tab=4) 100% courseid 重叠，合并为案例学习
 
-### Claude (AI Assistant) 的贡献
-- **5 项 Bug 修复**：TODO.md 全清，涉及 is-learned、触屏滚动、分类导航、三级标签、播放按钮
-- **实测驱动开发**：多次运行脚本登录平台 dump 真实 DOM，精确定位选择器和数据结构
-- **架构改进**：实例级去重、分类按钮化、回退链优化
-- **文档更新**：TODO.md 完结、CHANGELOG/关于弹窗同步 v1.6.0
-
 ## v1.5.1 (2026-07-20)
 
 - **PyInstaller 打包浏览器路径修复**：`start_browser()` 新增 `executable_path` 直连策略绕过 Playwright channel 解析，`_ensure_playwright_browsers()` 在检测系统浏览器之前预置 `PLAYWRIGHT_BROWSERS_PATH` 防止回退到临时目录 `_MEI*`，`_find_system_browser()` 改为返回完整可执行文件路径
 - **根因**：v1.4 新增 `_find_system_browser()` 检测到系统 Edge 后直接 return，跳过了 v1.3 原有的 `PLAYWRIGHT_BROWSERS_PATH` 设置，导致 channel 启动失败后回退到 `p.chromium.launch()` 时路径解析到 PyInstaller 临时目录
-
-### Claude (AI Assistant) 的贡献
-- **Bug 修复**：诊断 PyInstaller 临时目录路径问题，三函数重构（`_find_system_browser` 返回值扩展、`_ensure_playwright_browsers` 环境变量预置、`start_browser` 三策略启动链）
-- **文档更新**：README/CHANGELOG/关于弹窗版本号同步到 v1.5.1
 
 ## v1.5 (2026-07-20)
 
@@ -122,12 +84,6 @@
 - **每日练习本地日计数**：`daily_state.json` 按日期记录当日得分，跨天自动清零，替代原来读平台周累计 `#dtStudyWeek` 的错误逻辑（周一 3 分后周二起永远跳过）
 - **每日练习重置按钮**：前端新增「重置计数」链接 + `/api/reset_daily_exercise` 端点，手动容错
 
-### Claude (AI Assistant) 的贡献
-- **Bug 修复**：`_solve_multiple_choice` 提交按钮阻断、`_wait_study_done` 超时 3600→36000
-- **代码重构**：`_click_article_card` courseid 去重重写、每日练习本地日计数系统（6 个新方法）
-- **诊断分析**：Playwright 直连平台页面提取真实 DOM 结构，定位 `li.course-item` + `courseid` 属性
-- **文档更新**：README v1.5 章节、版本演进表、关于弹窗版本号同步
-
 ## v1.4 (2026-07-14)
 
 - **推荐页已学习过滤**：检测 `is-learned` class 和 `course-card__learned-badge`，跳过已学习文章，不再重复点击
@@ -135,10 +91,6 @@
 - **视频策略独立**：`study_videos` 只刷集团课程-视频课程 → 案例学习，专业课程图文归 article 策略管，不再混入视频模块
 - **通用刷课循环**：`_do_study_loop` + `_click_subtab` 提取为通用方法，支持任意页面+子tab组合
 - **DOM 结构验证**：完整分析平台三级导航结构（一级tab/二级tab/三级tab + 课程卡片），所有选择器经过干跑测试验证
-
-### Claude (AI Assistant) 的贡献
-- **代码实现**：`_click_article_card` is-learned 过滤、`study_videos` 重构 + `_do_study_loop` + `_click_subtab`、`study_articles` 推荐回退专业课程
-- **配置系统**：`jituan_priority` 配置项 + 设置UI + 加载/保存/重置
 
 ## v1.3 (2026-07-11)
 
@@ -149,11 +101,6 @@
 - **启动预检查**：程序启动时提前检查/下载浏览器，避免登录时才等待
 - **构建脚本**：`build.bat` 一键安装依赖 + 打包
 - **v1.3 补丁 (2026-07-13)**：修复日志卡片末行截断、浏览器检测优化（有 Edge 跳过 Chromium 下载）、图文页 networkidle 超时兜底、手动模块改为循环执行直到停止
-
-### Claude (AI Assistant) 的贡献
-- **代码实现**：executor.py 多通道回退 + `_ensure_playwright_browsers()` 自动下载函数
-- **打包修复**：OverWall.spec hidden imports + build.bat 构建脚本
-- **文档更新**：README v1.3 章节，模板版本号同步
 
 ## v1.2 (2026-07-09)
 
@@ -167,16 +114,6 @@
 - **题库查看面板**：自适应高度撑满右栏，内部滚动不撑页面
 - **关于弹窗**：footer 点击"关于"弹窗查看版本、功能、技术栈信息
 - **网页图标**：`favicon.ico` 生效
-
-### XTong 的贡献
-- **测试反馈**：发现无头模式手动按钮报错、仪表盘指标不更新、停止后无法登录、题库查看窗口溢出等 bug
-- **UI 设计**：提出全屏仪表盘布局需求、模拟考试无头模式禁用交互、关于弹窗需求
-
-### Claude (AI Assistant) 的贡献
-- **UI 重构**：单列窄卡片 → 双栏仪表盘，CSS Grid 布局，设置页面重排
-- **Bug 修复**：无头模式 browser closed、题库数量轮询覆盖、停止登录竞态、仪表盘指标不更新
-- **代码实现**：`start_browser()` 重连、`_status_snapshot` 状态同步、三层无头拦截
-- **文档更新**：记忆库新增 1 条，README v1.2 章节
 
 ## v1.1 (2026-07-09)
 
@@ -196,11 +133,3 @@
 - 敏感字段本地 XOR 加密存储
 - 多选 checkbox 通过每次重新查询 DOM 解决 layui 重渲染引用失效
 
-### XTong 的贡献
-- **产品设计**：需求定义，策略优先级，UI 交互设计
-- **测试反馈**：全流程测试，页面结构分析，bug 定位
-
-### Claude (AI Assistant) 的贡献
-- **架构设计**：Flask + Playwright + 轮询架构，工作线程管理
-- **代码实现**：全模块开发（登录/答题/图文/视频/考试/题库/UI）
-- **调试优化**：多选 DOM 定位，AI 提示词优化，token 配置调整

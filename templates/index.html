@@ -62,7 +62,6 @@
           <!-- 答题 -->
           <button class="btn btn-module" data-module="exercise">每日练习</button>
           <button class="btn btn-ghost btn-sm" id="resetDailyExercise" type="button" title="手动清除今日练习计数，跨天自动重置">重置计数</button>
-          <button class="btn btn-module" data-module="mock_exam" id="btnMockExam">模拟考试</button>
           <span class="module-sep">|</span>
           <!-- 图文 -->
           <span class="module-label">图文</span>
@@ -75,7 +74,6 @@
           <button class="btn btn-module btn-module-sm" data-module="video_unit" title="单位课程">单位课程</button>
           <button class="btn btn-module btn-module-sm" data-module="video_case" title="案例学习（含事故案例）">案例学习</button>
         </section>
-        <section class="control-bar control-bar-modules" id="examListBar" style="display:none"></section>
 
         <!-- 运行日志 -->
         <section class="log-panel card">
@@ -125,7 +123,7 @@
     <footer class="footer">
       <span id="footerStatus">就绪</span>
       <span class="footer-disclaimer">仅供个人学习研究使用，请遵守目标平台协议。开发者不承担任何使用风险。</span>
-      <span class="footer-version">v1.7.1 &middot; <span id="btnAbout" class="about-link">关于</span></span>
+      <span class="footer-version">v1.8.0 &middot; <span id="btnAbout" class="about-link">关于</span></span>
     </footer>
   </main>
 
@@ -138,12 +136,12 @@
       </div>
       <div class="about-dialog-body">
         <h4>版本</h4>
-        <p>OverWall v1.7.1 — 你有张良计，我有过墙梯</p>
+        <p>OverWall v1.8.0 — 你有张良计，我有过墙梯</p>
         <h4>功能说明</h4>
-        <p>OverWall 是一款学习平台辅助工具，用于自动化完成图文学习、视频学习、每日练习和模拟考试等任务。</p>
+        <p>OverWall 是一款学习平台辅助工具，用于自动化完成图文学习、视频学习和每日练习等任务。</p>
+        <p>v1.8.0 适配：学习中心改版（新页面/新卡片分页）、每日练习「下一题」和简答题、登录按钮改版。</p>
         <p>v1.7.1 修复：平台打乱选项顺序后不再答错（题库锚定选项内容而非序号），AI token 预算提高。</p>
         <p>v1.7.0 更新：AI 支持多服务商（OpenAI 兼容协议）+ 模型列表自动检测，设置页可自选模型。</p>
-        <p>v1.6.4 更新：每日练习选择题提交后统一手动刷新获取下一题，修复平台不自动跳转导致卡同一题。</p>
         <p>v1.5.1 修复：PyInstaller 打包后浏览器路径修复。v1.5 新增：超时10h、视频courseid去重、每日练习本地日计数。</p>
         <h4>免责声明</h4>
         <p>本软件仅供个人学习研究使用。使用者应自行承担使用本软件的一切风险和责任。开发者不对因使用本软件而导致的任何直接或间接损失负责，包括但不限于：账号异常、数据丢失、平台封禁等。</p>
@@ -194,7 +192,6 @@
               <div class="strategy-item" draggable="true" data-type="article">图文学习（阅读计时）</div>
               <div class="strategy-item" draggable="true" data-type="video">视频学习（播放计时）</div>
               <div class="strategy-item" draggable="true" data-type="exercise">每日练习（答题，日限3分）</div>
-              <div class="strategy-item" draggable="true" data-type="mock_exam">模拟考试（答题，不限次）</div>
             </div>
           </div>
           <div class="setting-card">

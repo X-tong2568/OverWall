@@ -355,21 +355,6 @@ def api_reset_daily_exercise():
         _add_log("info", "每日练习计数已手动重置")
     return jsonify({"code": 200, "msg": "每日练习计数已重置"})
 
-# ---- 获取考试列表 ----
-@app.route("/api/exam_list", methods=["POST"])
-def api_exam_list():
-    global _executor
-    if not _executor or not _logged_in:
-        return jsonify({"code": 400, "msg": "请先登录"})
-    _add_log("info", "正在获取考试列表...")
-    return jsonify({"code": 200, "exams": [
-        {"name": "救援队模拟考试"},
-        {"name": "综合单位取证(再培训)模拟考试"},
-        {"name": "危化单位取证(再培训)模拟考试"},
-        {"name": "冶炼单位取证(再培训)模拟考试"},
-        {"name": "矿山单位取证(再培训)模拟考试"}
-    ]})
-
 # ---- 手动模块执行（工作线程执行） ----
 @app.route("/api/run/<module>", methods=["POST"])
 def api_run_module(module: str):
@@ -380,127 +365,74 @@ def api_run_module(module: str):
     cfg = load_config()
     api_key = cfg.get("ai_key", "")
     if _executor: _executor.cfg = cfg  # refresh config
-    exam_index = request.args.get("index", 0, type=int)
 
     async def _do():
-        _executor.running = True
+        # 用局部引用，避免 stop 把全局 _executor 置 None 后循环里出现 NoneType
+        ex = _executor
+        if not ex or not _logged_in:
+            _add_log("warn", "任务已取消")
+            return
+        ex.running = True
         try:
             # 确保浏览器连接有效（手动模块login和执行分两次任务，headless下可能断开）
-            page = await _executor.start_browser()
+            page = await ex.start_browser()
             if not page:
                 _add_log("error", "浏览器未连接，请重新登录")
                 return
-            # 无头模式下模拟考试不可用（需可视化交互确认签名）
-            if module == "mock_exam" and cfg.get("headless"):
-                _add_log("warn", "无头模式下模拟考试不可用，请关闭无头模式后重试")
-                return
+
+            async def _loop(label: str, coro_factory, session_key: str):
+                """循环执行模块；停止后立即退出，不再空等15秒"""
+                total = 0
+                while ex.running and ex.page:
+                    res = await coro_factory()
+                    total += res
+                    _status_snapshot[session_key] += res
+                    _status_snapshot["session_points"] += res
+                    if not ex.running or not ex.page:
+                        break
+                    if res == 0:
+                        _add_log("warn", f"{label}: 该分类暂无可学习内容（已学完或未开放），任务结束")
+                        break
+                _add_log("info", f"{label}: 共+{total}分")
+                return total
+
             if module == "exercise":
-                res = await _executor.do_exercises(api_key)
+                res = await ex.do_exercises(api_key)
                 _add_log("info", f"每日练习: 对{res['correct']} 得{res['points']}分")
                 _status_snapshot["session_exercise_correct"] += res.get("correct", 0)
                 _status_snapshot["session_exercise_wrong"] += res.get("wrong", 0)
                 _status_snapshot["session_points"] += res.get("points", 0)
-            elif module == "mock_exam":
-                res = await _executor.do_mock_exam(api_key, exam_index or 0)
-                _add_log("info", f"模拟考试: {res['correct']}/{res['total']}")
             # ---- 图文分类（单类循环，不跨类回退） ----
             elif module == "article_recommend":
-                # 推荐页图文
-                total = 0
-                while _executor and _executor.running:
-                    res = await _executor.study_articles(5)
-                    total += res
-                    _status_snapshot["session_articles"] += res
-                    _status_snapshot["session_points"] += res
-                    if res == 0:
-                        _add_log("warn", "图文(推荐): 无可读文章，暂停15秒后重试...")
-                        await asyncio.sleep(15)
-                _add_log("info", f"图文(推荐): 共+{total}分")
+                await _loop("图文(推荐)", lambda: ex.study_articles(5), "session_articles")
             elif module == "article_pro":
-                # 集团课程-专业课程(图文)
-                total = 0
-                while _executor and _executor.running:
-                    if not await _executor._goto_study_from_score("集团课程"):
-                        break
-                    await _executor._click_subtab("专业课程")
-                    res = await _executor._do_study_loop("集团课程", "专业课程", 5, click_play=False)
-                    total += res
-                    _status_snapshot["session_articles"] += res
-                    _status_snapshot["session_points"] += res
-                    if res == 0:
-                        _add_log("warn", "图文(专业课程): 无可读，暂停15秒后重试...")
-                        await asyncio.sleep(15)
-                _add_log("info", f"图文(专业课程): 共+{total}分")
+                await _loop("图文(专业课程)", lambda: ex.study_articles(5, category="group_pro"), "session_articles")
             # ---- 视频分类（单类循环，不跨类回退） ----
             elif module == "video_group":
-                # 集团课程-视频课程
-                total = 0
-                while _executor and _executor.running:
-                    res = await _executor.study_videos(tab=2, count=3)
-                    total += res
-                    _status_snapshot["session_videos"] += res
-                    _status_snapshot["session_points"] += res
-                    if res == 0:
-                        _add_log("warn", "视频(集团-视频课程): 无可播，暂停15秒后重试...")
-                        await asyncio.sleep(15)
-                _add_log("info", f"视频(集团-视频课程): 共+{total}分")
+                await _loop("视频(集团-视频课程)", lambda: ex.study_videos(tab=2, count=3), "session_videos")
             elif module == "video_unit":
-                # 单位课程
-                total = 0
-                while _executor and _executor.running:
-                    res = await _executor.study_videos(tab=3, count=3)
-                    total += res
-                    _status_snapshot["session_videos"] += res
-                    _status_snapshot["session_points"] += res
-                    if res == 0:
-                        _add_log("warn", "视频(单位课程): 无可播，暂停15秒后重试...")
-                        await asyncio.sleep(15)
-                _add_log("info", f"视频(单位课程): 共+{total}分")
+                await _loop("视频(单位课程)", lambda: ex.study_videos(tab=3, count=3), "session_videos")
             elif module == "video_case":
-                # 案例学习
-                total = 0
-                while _executor and _executor.running:
-                    res = await _executor.study_videos(tab=4, count=3)
-                    total += res
-                    _status_snapshot["session_videos"] += res
-                    _status_snapshot["session_points"] += res
-                    if res == 0:
-                        _add_log("warn", "视频(案例学习): 无可播，暂停15秒后重试...")
-                        await asyncio.sleep(15)
-                _add_log("info", f"视频(案例学习): 共+{total}分")
+                await _loop("视频(案例学习)", lambda: ex.study_videos(tab=4, count=3), "session_videos")
             # ---- 通用：引擎使用的全回退链（保留兼容） ----
             elif module == "article":
-                total = 0
-                while _executor and _executor.running:
-                    res = await _executor.study_articles(5)
-                    total += res
-                    _status_snapshot["session_articles"] += res
-                    _status_snapshot["session_points"] += res
-                    if res == 0:
-                        _add_log("warn", "图文: 无可读文章，暂停15秒后重试...")
-                        await asyncio.sleep(15)
-                _add_log("info", f"图文: 共+{total}分")
+                await _loop("图文", lambda: ex.study_articles(5), "session_articles")
             elif module == "video":
-                total = 0
-                while _executor and _executor.running:
-                    res = await _executor.study_videos(tab=2, count=3)
-                    if res < 3:
-                        res += await _executor.study_videos(tab=3, count=3)
-                    if res < 3:
-                        res += await _executor.study_videos(tab=4, count=3)
-                    total += res
-                    _status_snapshot["session_videos"] += res
-                    _status_snapshot["session_points"] += res
-                    if res == 0:
-                        _add_log("warn", "视频: 无可播视频，暂停15秒后重试...")
-                        await asyncio.sleep(15)
-                _add_log("info", f"视频: 共+{total}分")
+                async def _video_all():
+                    res = await ex.study_videos(tab=2, count=3)
+                    if res < 3 and ex.running and ex.page:
+                        res += await ex.study_videos(tab=3, count=3)
+                    if res < 3 and ex.running and ex.page:
+                        res += await ex.study_videos(tab=4, count=3)
+                    return res
+                await _loop("视频", _video_all, "session_videos")
         except Exception as e:
-            _add_log("error", f"执行异常: {e}")
-        # 检查 executor 是否被 stop 清除了
-        if _executor and _executor.page and not getattr(_executor.page, '_closed', True):
+            if ex.running:
+                _add_log("error", f"执行异常: {e}")
+        # 检查 executor 是否仍然有效
+        if ex.page and not getattr(ex.page, "_closed", True):
             try:
-                pts = await _executor.get_weekly_points()
+                pts = await ex.get_weekly_points()
                 _status_snapshot["weekly_points"] = pts
                 _add_log("info", f"当前周积分: {pts}")
             except Exception:
@@ -549,7 +481,7 @@ if __name__ == "__main__":
     port = 15888
     print(f"""
 ╔══════════════════════════════════════╗
-║        OverWall 刷分系统 v1.7.1       ║
+║        OverWall 刷分系统 v1.8.0       ║
 ║  打开浏览器访问:                      ║
 ║  http://127.0.0.1:{port}              ║
 ╚══════════════════════════════════════╝

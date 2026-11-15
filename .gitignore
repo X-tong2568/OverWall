@@ -8,6 +8,9 @@ config.json
 # 题库数据
 question_bank.json
 
+# 每日练习本地计数（运行时生成）
+daily_state.json
+
 # Cookie
 cookies.json
 

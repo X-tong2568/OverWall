@@ -4,11 +4,13 @@ Playwright 执行层 —— 浏览器自动化：登录、刷图文、刷视频�
 import asyncio
 import json
 import os
+import random
 import re
 import sys
 import time
 import zipfile
 import io
+from urllib.parse import quote
 from playwright.async_api import async_playwright, Page, Browser
 
 from question_bank import lookup_question, record_answer, split_option_text, letters_to_content
@@ -23,6 +25,49 @@ else:
 # Playwright 浏览器版本（与 playwright 1.52 匹配）
 _CHROMIUM_REVISION = "1169"
 _FFMPEG_REVISION = "1011"
+
+# ---- 平台新版页面路径（2026-11 改版）----
+_STUDY_HUB = "/src/apps/app-aqhb/src/components/studentWeb/user-study/index.html"
+_COURSE_DETAIL = "/src/apps/app-aqhb/src/components/studentWeb/courseDetail.html"
+_RECOMMEND_DETAIL = "/src/apps/app-aqhb/src/components/studentWeb/user-study/detail-command.html"
+
+# 学习中心 tab：key -> (页面 tab 参数, 平台 ctype)
+_STUDY_TABS = {
+    "recommend": (1, "recommend"),
+    "group": (2, "group"),
+    "unit": (3, "unit"),
+    "accident": (4, "accident"),
+}
+
+# 学习任务分类：key -> (tab key, 分类名称；None 表示取接口返回的第一个分类)
+_STUDY_CATEGORIES = {
+    "recommend": ("recommend", None),
+    "group_video": ("group", "视频课程"),
+    "group_pro": ("group", "专业课程"),
+    "unit": ("unit", None),
+    "accident": ("accident", None),
+}
+
+# 积分页任务项 data-type 映射（用于一步步点击进入学习中心）
+_STUDY_SCORE_TYPES = {
+    "recommend": "study",
+    "group": "study2",
+    "unit": "study3",
+    "accident": "study4",
+}
+
+
+def _to_int(value, default: int = 0) -> int:
+    """安全转整数（平台 total 等字段偶尔是字符串）"""
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _norm_text(text: str) -> str:
+    """去掉空白，用于判断题干是否变化"""
+    return re.sub(r"\s+", "", text or "")
 
 
 def _find_system_browser() -> tuple[str | None, str | None]:
@@ -178,6 +223,8 @@ class TaskExecutor:
         self._running = False
         self._login_done = False
         self._seen_courseids: set = set()  # 实例级 courseid 去重（跨轮次持久，避免刷重复视频）
+        self._recommend_class_id: str | None = None  # 推荐页分类 ID（从页面请求里抓取）
+        self._study_class_cache: dict = {}  # 学习中心分类列表缓存
 
     # ---- 日志 ----
     async def _info(self, msg: str):
@@ -309,6 +356,9 @@ class TaskExecutor:
         if getattr(self, '_login_done', False):
             await self._info("已登录，跳过")
             return True
+        if not self.page:
+            await self._warn("浏览器未启动，无法登录")
+            return False
 
         username = self.cfg.get("username", "")
         password = self.cfg.get("password", "")
@@ -326,28 +376,24 @@ class TaskExecutor:
             self._login_done = True
             return True
 
-        # 填表
+        # 填表（2026-11 改版：账号框 name=userCode，登录按钮 #tgit-app-login-btn-sub）
+        # 新版按 Enter 不会提交，必须点按钮
         try:
-            uname = self.page.locator('input[type="text"]').first
-            pwd = self.page.locator('input[type="password"]').first
+            uname = self.page.locator('input[name="userCode"], input[type="text"]').first
+            pwd = self.page.locator('input[name="password"], input[type="password"]').first
             await uname.click()
             await uname.fill(username)
             await pwd.click()
             await pwd.fill(password)
             await self._info(f"已填入 {username}，提交...")
 
-            # 优先按键 Enter
-            await pwd.press("Enter")
-            await asyncio.sleep(1)
-
-            # Enter 无效则点按钮
-            if "login" in self.page.url:
-                for sel in ['button:has-text("登")', 'button[type="submit"]', 'button']:
-                    btn = self.page.locator(sel).first
-                    if await btn.count() > 0 and await btn.is_visible():
-                        await btn.click()
-                        await asyncio.sleep(1)
-                        break
+            btn = self.page.locator('#tgit-app-login-btn-sub').first
+            if await btn.count() == 0:
+                btn = self.page.locator('button:has-text("确认")').first
+            if await btn.count() > 0 and await btn.is_visible():
+                await btn.click()
+            else:
+                await pwd.press("Enter")
         except Exception as e:
             await self._warn(f"填表异常: {e}")
 
@@ -360,11 +406,22 @@ class TaskExecutor:
                 self._login_done = True
                 return True
 
+        # 打印页面提示，便于排查账号密码/风控问题
+        try:
+            tips = await self.page.locator(".tipInfo, .layui-layer-msg, .sys-message").all_inner_texts()
+            tips = [t.strip() for t in tips if t.strip()]
+            if tips:
+                await self._warn(f"登录页提示: {tips[:3]}")
+        except Exception:
+            pass
+
         await self._error("登录超时，检查账号密码")
         return False
 
     # ---- 通用 ----
     async def _wait_content(self):
+        if not self.page:
+            return
         try:
             await self.page.wait_for_load_state("networkidle", timeout=10000)
         except Exception:
@@ -428,413 +485,518 @@ class TaskExecutor:
         return False
 
     # ---- 从积分页进入学习 ----
-    async def _goto_study_from_score(self, tab_name: str) -> bool:
-        """从积分页点击对应模块的'去学习'按钮进入"""
+    # ---- 学习中心（2026-11 新版）----
+    # 新版学习中心不再用「推荐/集团/单位/案例」+ 子tab 的旧结构，
+    # 改成统一页面 user-study/index.html?tab=1/2/3/4 + 卡片列表分页。
+    # 这里采用「页面内接口取列表 + 真实详情页学习」，既稳定又不绕过平台计时。
+
+    async def _pace(self, min_sec: float = 1.0, max_sec: float = 2.0):
+        """随机等待，降低请求频率，避免触发平台风控"""
+        await asyncio.sleep(random.uniform(min_sec, max_sec))
+
+    async def _open_study_hub(self, tab_key: str) -> bool:
+        """打开学习中心对应 tab（recommend/group/unit/accident）
+
+        推荐页 tab 会顺便抓取页面自己发出的 getStudyInfo 请求，
+        从中拿到推荐分类 ID，避免写死平台参数。
+        """
+        if not self.page:
+            return False
+        tab_info = _STUDY_TABS.get(tab_key)
+        if not tab_info:
+            await self._warn(f"  未知学习分类: {tab_key}")
+            return False
+        tab_num = tab_info[0]
         base = self.cfg.get("base_url", "").rstrip("/")
-        score_url = f"{base}/src/apps/app-aqhb/src/components/studentWeb/user-score/index.html?type=week"
+        url = f"{base}{_STUDY_HUB}?tab={tab_num}"
 
-        await self._info(f"  导航到积分页...")
-        await self.page.goto(score_url, wait_until="networkidle", timeout=30000)
-        await asyncio.sleep(2)
+        captured: dict = {}
 
-        # 读取本周积分并推送到状态
+        def on_request(req):
+            """抓取推荐页的 getStudyInfo 请求体"""
+            try:
+                if tab_key == "recommend" and "getStudyInfo" in req.url and req.method == "POST":
+                    body = req.post_data or ""
+                    if body:
+                        captured["body"] = json.loads(body)
+            except Exception:
+                pass
+
+        self.page.on("request", on_request)
         try:
-            pts_el = self.page.locator("#weekLearningPoints")
-            if await pts_el.count() > 0:
-                pts = int((await pts_el.text_content() or "0").strip())
-                await self.log("status", {"weekly_points": pts})
-                await self._info(f"  本周积分: {pts}")
+            await self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await self._wait_content()
+        except Exception as e:
+            if self._running and self.page:
+                await self._warn(f"  打开学习中心失败: {e}")
+            return False
+        finally:
+            if self.page:
+                self.page.remove_listener("request", on_request)
+
+        body = captured.get("body") or {}
+        if body.get("classId"):
+            self._recommend_class_id = str(body["classId"])
+        await self._pace(1.0, 2.0)
+        return True
+
+    async def _click_study_category(self, category: str):
+        """点击集团课程下的二级分类（视频课程/专业课程），仅用于界面展示"""
+        info = _STUDY_CATEGORIES.get(category)
+        if not info or not info[1] or not self.page:
+            return
+        wanted = info[1]
+        try:
+            items = self.page.locator(".study-cats__item")
+            for i in range(await items.count()):
+                el = items.nth(i)
+                text = (await el.text_content() or "").strip()
+                if wanted in text:
+                    cls = await el.get_attribute("class") or ""
+                    if "active" not in cls:
+                        await el.click()
+                        await self._wait_content()
+                    return
         except Exception:
             pass
 
-        try:
-            items = self.page.locator('li.task-item')
-            cnt = await items.count()
-            await self._info(f"  找到 {cnt} 个任务项")
+    async def _ensure_study_tab(self, category: str) -> bool:
+        """确保浏览器停在对应学习中心页面
 
-            for i in range(cnt):
-                item = items.nth(i)
-                name_el = item.locator('.task-item__name')
-                if await name_el.count() > 0:
-                    name = (await name_el.text_content() or "").strip()
-                    btn = item.locator('button:has-text("去学习")')
-                    has_btn = await btn.count() > 0
-                    await self._info(f"    [{i}] {name} {'[有按钮]' if has_btn else ''}")
-                    if tab_name in name and has_btn:
-                        await self._info(f"  → 点击: {name}")
-                        await btn.click()
-                        await asyncio.sleep(3)
-                        await self.page.evaluate("window.scrollTo(0, 500)")
-                        await asyncio.sleep(1)
-                        await self._wait_content()
-                        await asyncio.sleep(2)
-                        return True
-            await self._warn(f"  在{ cnt }个任务项中未找到'{tab_name}'")
-        except Exception as e:
-            await self._warn(f"  从积分页进入失败: {e}")
-        return False
-
-    # ---- 刷图文 ----
-    async def study_articles(self, count: int = 5) -> int:
-        """刷图文学习：从积分页进入推荐，推荐刷完自动回退专业课程(图文)"""
-        points = 0
-        await self._info("→ 图文: 推荐页")
-
-        # 从积分页进入
-        if await self._goto_study_from_score("推荐"):
-            await self._dump_page("article")
-            for i in range(count):
-                if not self._running:
-                    break
-                await self._info(f"图文 [{i+1}/{count}]: 点击文章卡片...")
-                clicked = await self._click_article_card()
-                if not clicked:
-                    await self._warn("图文: 未找到可点击的文章")
-                    break
-                await self._wait_content()
-                await self._info("  等待学习倒计时...")
-                done = await self._wait_study_done()
-                if not self._running:
-                    break
-                if done:
-                    points += 1
-                    await self._info(f"  ✓ 图文完成 +1 (累计{points})")
-                else:
-                    await self._warn("  等待超时")
-                if not self._running:
-                    break
-                if not await self._goto_study_from_score("推荐"):
-                    break
-
-        # 推荐全部已学习 → 回退到集团课程-专业课程(图文)
-        if points == 0 and self._running:
-            await self._info("→ 推荐页无可读，回退到集团课程-专业课程(图文)")
-            points += await self._do_study_loop("集团课程", "专业课程", count,
-                                                 click_play=False)
-
-        await self._info(f"图文结束: +{points}分")
-        return points
-
-    async def _click_article_card(self) -> bool:
-        """找到并点击课程卡片（实例级 courseid 去重 + 触屏滚动加载 + is-learned 检测）
-
-        实测 DOM 结构（视频课程页）：
-        <li class="course-item" courseid="HUIccW5aemEWCPh">
-          <span class="info-item _name">课程标题</span>
-          <span class="info-item _hours">0.1 课程时长</span>
-        </li>
-        使用 self._seen_courseids 实例级去重，同一进程内所有分类共享，避免跨轮重复。
+        优先按真人路径：积分页 -> 点「去学习」-> 学习中心 tab -> 分类。
+        点击失败时才回退直接 URL。
         """
+        info = _STUDY_CATEGORIES.get(category)
+        if not info or not self.page:
+            return False
+        tab_key = info[0]
+        tab_info = _STUDY_TABS.get(tab_key)
+        if not tab_info:
+            return False
+        tab_num = tab_info[0]
+        marker = f"user-study/index.html?tab={tab_num}"
 
-        # 卡片选择器（实测：视频课程页用 li.course-item，图文页用 li.course-card--hero 等）
-        CARD_SELECTORS = (
-            'li.course-item, li.course-card--hero, li.course-card--list, '
-            'li.course-card--text, li.course-card, li[class*="course-card"], '
-            'li[class*="course-item"], div.course-card, div[class*="course-card"]'
-        )
-        # JS：提取卡片信息（courseid 优先做去重键，标题备用）
-        JS_EXTRACT_CARDS = f"""(seen) => {{
-            const cards = document.querySelectorAll('{CARD_SELECTORS}');
-            const results = [];
-            for (let i = 0; i < cards.length; i++) {{
-                const card = cards[i];
-                // 去重键：courseid 属性 > data-id 属性 > 规范化标题
-                const cid = card.getAttribute('courseid') || card.getAttribute('data-id') || '';
-                // 标题：实测 span.info-item._name / span._name
-                let titleEl = card.querySelector('._name, .course-title, .card-title, [class*="course-title"], [class*="card-title"]');
-                if (!titleEl) {{
-                    const candidates = card.querySelectorAll('[class*="title"], [class*="_name"]');
-                    for (const c of candidates) {{
-                        const cn = c.className || '';
-                        if (!/(status|badge|tag|label|mark|complete|finish|learned|done)/i.test(cn)) {{
-                            titleEl = c; break;
-                        }}
-                    }}
-                }}
-                if (!titleEl) titleEl = card;
-                let title = (titleEl.innerText || titleEl.textContent || '').replace(/\\s+/g, ' ').trim();
-                // 平台标记：已学习卡片带 is-learned CSS class（兼容直接标记和父级标记）
-                const isLearned = card.classList.contains('is-learned') ||
-                                  !!card.querySelector('.is-learned') ||
-                                  !!card.closest('.is-learned');
-                // 去重判断：courseid 优先，标题回退，is-learned 兜底
-                const dedupKey = cid || title;
-                const alreadySeen = isLearned ||
-                                    (cid && seen.includes(cid)) ||
-                                    (!cid && title && seen.includes(title));
-                results.push({{index: i, title: title, courseid: cid, dedupKey: dedupKey, alreadySeen: alreadySeen, isLearned: isLearned}});
-            }}
-            return results;
-        }}"""
+        # 已经在目标 tab：只切分类
+        if marker in (self.page.url or ""):
+            await self._click_study_category(category)
+            return True
 
+        # 1) 从积分页一步步点击进入
+        base = self.cfg.get("base_url", "").rstrip("/")
+        score_url = (f"{base}/src/apps/app-aqhb/src/components/studentWeb/"
+                     "user-score/index.html?type=week")
+        score_type = _STUDY_SCORE_TYPES.get(tab_key)
         try:
-            # 滚动直到找到未看过的卡片
-            for attempt in range(10):
-                cards_info = await self.page.evaluate(JS_EXTRACT_CARDS, list(self._seen_courseids))
-
-                first_unseen = None
-                for ci in cards_info:
-                    if not ci["alreadySeen"] and ci["dedupKey"]:
-                        first_unseen = ci
+            await self.page.goto(score_url, wait_until="domcontentloaded", timeout=30000)
+            await self._wait_content()
+            btn = self.page.locator(f'li.task-item[data-type="{score_type}"] button').first
+            if score_type and await btn.count() > 0:
+                await self._info(f"  从积分页进入学习中心: {tab_key}")
+                await btn.click()
+                for _ in range(20):
+                    await asyncio.sleep(0.5)
+                    if "user-study/index.html" in (self.page.url or ""):
                         break
-
-                if first_unseen:
-                    break  # 找到了
-
-                # 没找到 → 模拟移动端触屏滑动加载更多
-                # 页面本质是手机网页，PC 端 scrollTop 赋值不会触发懒加载
-                # 需要用 TouchEvent 派发触屏滑动事件
-                prev = await self.page.evaluate(
-                    f"() => document.querySelectorAll('{CARD_SELECTORS}').length")
-                await self.page.evaluate("""() => {
-                    const el = document.querySelector('.study-content, main') || document.scrollingElement || document.body;
-                    const vh = window.innerHeight;
-                    // 模拟手指从屏幕下方 75% 向上滑到 25%
-                    const startY = vh * 0.75;
-                    const endY = vh * 0.25;
-                    const midX = window.innerWidth / 2;
-                    // 派发 touch 事件链
-                    el.dispatchEvent(new TouchEvent('touchstart', {
-                        touches: [{clientX: midX, clientY: startY, identifier: 0}],
-                        bubbles: true, cancelable: true
-                    }));
-                    el.dispatchEvent(new TouchEvent('touchmove', {
-                        touches: [{clientX: midX, clientY: endY, identifier: 0}],
-                        bubbles: true, cancelable: true
-                    }));
-                    el.dispatchEvent(new TouchEvent('touchend', {
-                        changedTouches: [{clientX: midX, clientY: endY, identifier: 0}],
-                        bubbles: true, cancelable: true
-                    }));
-                    // scrollIntoView 兜底：把最后一个卡片滚到视野内触发 IntersectionObserver
-                    const cards = document.querySelectorAll('li.course-item, li[class*="course-card"], div[class*="course-card"]');
-                    if (cards.length > 0) {
-                        cards[cards.length - 1].scrollIntoView({block: 'end', behavior: 'instant'});
-                    }
-                }""")
-                await asyncio.sleep(1.5)  # 多等 0.5s 给懒加载响应时间
-                now = await self.page.evaluate(
-                    f"() => document.querySelectorAll('{CARD_SELECTORS}').length")
-                if now == prev:
-                    break  # 没新内容了
-
-            # 重新提取最新卡片列表
-            cards_info = await self.page.evaluate(JS_EXTRACT_CARDS, list(self._seen_courseids))
-
-            if not cards_info:
-                await self._warn("  页面无课程卡片")
-                return False
-
-            # 日志：列出所有卡片状态
-            for ci in cards_info:
-                if ci.get("isLearned"):
-                    marker = "L"  # L = 平台标记已学习 (is-learned)
-                elif ci["alreadySeen"]:
-                    marker = "V"  # V = 本地去重已看过
-                else:
-                    marker = "N"  # N = 新卡片
-                cid_str = f" [{ci['courseid'][:12]}]" if ci['courseid'] else ""
-                await self._info(f"    [{marker}]{cid_str} {ci['title'][:60]}")
-
-            # 找第一个未看过的
-            for ci in cards_info:
-                if ci["alreadySeen"]:
-                    continue
-                if not ci["dedupKey"]:
-                    continue
-                # 用 Playwright locator 点击
-                card = self.page.locator(CARD_SELECTORS).nth(ci["index"])
-                if await card.count() > 0:
-                    await card.scroll_into_view_if_needed()
-                    await asyncio.sleep(0.3)
-                    await card.click()
-                    await self._info(f"  点击: {ci['title'][:50]}")
-                    self._seen_courseids.add(ci["dedupKey"])
-                    await asyncio.sleep(1)
-                    return True
-
-            await self._warn(f"  所有{len(cards_info)}个卡片均已看过")
+                await self._wait_content()
         except Exception as e:
-            await self._warn(f"  点击卡片异常: {e}")
+            if self._running and self.page:
+                await self._warn(f"  积分页进入失败: {e}")
+
+        # 2) 还没到目标页面 → 回退直接 URL
+        if marker not in (self.page.url or ""):
+            if not await self._open_study_hub(tab_key):
+                return False
+        else:
+            # 3) 目标 tab 没激活时点一下（从积分页进入通常已经激活）
+            try:
+                tab = self.page.locator(f'.study-tabs__item[data-tab="{tab_key}"]').first
+                if await tab.count() > 0:
+                    cls = await tab.get_attribute("class") or ""
+                    if "active" not in cls:
+                        await tab.click()
+                        await self._wait_content()
+            except Exception:
+                pass
+
+        await self._click_study_category(category)
+        return True
+
+    async def _fetch_json(self, path: str, method: str = "GET",
+                          body: dict | None = None) -> dict | None:
+        """在当前平台页面内调接口，自动带登录 Token
+
+        path: 以 /api 开头的相对路径
+        返回: 接口 JSON（失败返回 None）
+        """
+        if not self.page:
+            return None
+        try:
+            result = await self.page.evaluate(
+                """async ({path, method, body}) => {
+                    let token = "";
+                    try {
+                        if (window.layui && layui.data) {
+                            token = (layui.data("tgit") || {}).tgitToken || "";
+                        }
+                    } catch (e) {}
+                    const opts = { method: method, headers: {} };
+                    if (token) opts.headers["Tgittoken"] = token;
+                    if (body !== null && body !== undefined) {
+                        opts.headers["Content-Type"] = "application/json;charset=utf-8";
+                        opts.body = JSON.stringify(body);
+                    }
+                    const resp = await fetch(path, opts);
+                    const text = await resp.text();
+                    try { return JSON.parse(text); } catch (e) { return {__raw: text.slice(0, 500)}; }
+                }""",
+                {"path": path, "method": method, "body": body},
+            )
+            return result if isinstance(result, dict) else None
+        except Exception as e:
+            if self._running and self.page:
+                await self._warn(f"  接口调用失败 {path}: {e}")
+            return None
+
+    async def _get_recommend_class_id(self) -> str | None:
+        """获取推荐页分类 ID（优先从页面请求抓，失败用兜底常量）"""
+        if self._recommend_class_id:
+            return self._recommend_class_id
+        if await self._open_study_hub("recommend") and self._recommend_class_id:
+            return self._recommend_class_id
+        # 兜底：2026-11 实测推荐分类 ID
+        self._recommend_class_id = "3504173599051354112"
+        return self._recommend_class_id
+
+    async def _get_study_categories(self, tab_key: str) -> list[dict]:
+        """取学习中心某 tab 的分类列表（group/unit/accident）"""
+        type_map = {"group": 1, "unit": 2, "accident": 3}
+        type_num = type_map.get(tab_key)
+        if not type_num:
+            return []
+        if tab_key in self._study_class_cache:
+            return self._study_class_cache[tab_key]
+
+        resp = await self._fetch_json(f"/api/aqhb/courseClass/list?type={type_num}")
+        if not resp or not (str(resp.get("code")) == "2000" or resp.get("success")):
+            # 页面上下文可能未就绪，打开学习中心后重试一次
+            if await self._open_study_hub(tab_key):
+                resp = await self._fetch_json(f"/api/aqhb/courseClass/list?type={type_num}")
+        if not resp:
+            return []
+        data = resp.get("data") or []
+        if isinstance(data, list):
+            self._study_class_cache[tab_key] = data
+            return data
+        return []
+
+    async def _resolve_study_category(self, category: str) -> tuple[str, str | None, str | None]:
+        """解析学习任务分类，返回 (tab_key, class_id, 分类名称)"""
+        info = _STUDY_CATEGORIES.get(category)
+        if not info:
+            return "", None, None
+        tab_key, class_name = info
+        if tab_key == "recommend":
+            return "recommend", None, "推荐"
+
+        cats = await self._get_study_categories(tab_key)
+        if not cats:
+            return tab_key, None, class_name
+
+        chosen = None
+        if class_name:
+            for c in cats:
+                if class_name in (c.get("wf_classification_name") or ""):
+                    chosen = c
+                    break
+        if chosen is None:
+            chosen = cats[0]
+        return tab_key, str(chosen.get("id") or ""), (chosen.get("wf_classification_name") or class_name or "")
+
+    async def _fetch_study_cards(self, category: str, page_num: int = 1,
+                                 page_size: int = 10) -> tuple[list[dict], int]:
+        """通过页面内接口取卡片列表，返回 (cards, total)
+
+        cards 统一字段：kind/id/title/learned/ctype/type
+        """
+        info = _STUDY_CATEGORIES.get(category)
+        if not info:
+            return [], 0
+        tab_key = info[0]
+
+        if tab_key == "recommend":
+            class_id = await self._get_recommend_class_id()
+            body = {
+                "classId": class_id, "orgId": "", "wfCourseName": "",
+                "pageNum": page_num, "pageSize": page_size,
+            }
+            resp = await self._fetch_json(
+                "/api/aqhb/study/studentFrontPag/getStudyInfo", "POST", body)
+            if not resp or not (str(resp.get("code")) == "2000" or resp.get("success")):
+                # 页面上下文失效：重开学习中心再试一次
+                if await self._open_study_hub("recommend"):
+                    body["classId"] = self._recommend_class_id or class_id
+                    resp = await self._fetch_json(
+                        "/api/aqhb/study/studentFrontPag/getStudyInfo", "POST", body)
+            if not resp:
+                return [], 0
+            data = resp.get("data") or {}
+            rows = data.get("rows") or []
+            total = _to_int(data.get("total"))
+            cards = []
+            for row in rows:
+                rid = row.get("id")
+                if not rid:
+                    continue
+                cards.append({
+                    "kind": "recommend",
+                    "id": str(rid),
+                    "title": (row.get("content_subject") or "").strip(),
+                    "learned": str(row.get("is_learned")) in ("1", "True", "true"),
+                    "ctype": "recommend",
+                    "type": 1 if row.get("field8") else 0,
+                })
+            return cards, total
+
+        # 集团课程 / 单位课程 / 事故案例
+        tab_key, class_id, _class_label = await self._resolve_study_category(category)
+        if not class_id:
+            return [], 0
+        body = {
+            "returnAllData": True, "wfCourseClass": class_id, "wfSourse": "",
+            "wfCourseName": "", "pageNum": page_num, "pageSize": page_size,
+            "wfCourseStatus": "是",
+        }
+        resp = await self._fetch_json(
+            "/api/aqhb/study/studentFrontPag/getSourceCourse", "POST", body)
+        if not resp or not (str(resp.get("code")) == "2000" or resp.get("success")):
+            if await self._open_study_hub(tab_key):
+                # 分类缓存可能已失效，重新解析一次
+                self._study_class_cache.pop(tab_key, None)
+                _, class_id, _class_label = await self._resolve_study_category(category)
+                body["wfCourseClass"] = class_id
+                resp = await self._fetch_json(
+                    "/api/aqhb/study/studentFrontPag/getSourceCourse", "POST", body)
+        if not resp:
+            return [], 0
+        data = resp.get("data") or {}
+        rows = data.get("rows") or []
+        total = _to_int(data.get("total"))
+        cards = []
+        for row in rows:
+            rid = row.get("id")
+            if not rid:
+                continue
+            cards.append({
+                "kind": "course",
+                "id": str(rid),
+                "title": (row.get("wfCourseName") or "").strip(),
+                "learned": str(row.get("isLearned")) in ("1", "True", "true"),
+                "ctype": tab_key,
+                "type": 0,
+                "hours": row.get("wfCourseHours") or "",
+                "class_name": row.get("wfCourseClass") or "",
+            })
+        return cards, total
+
+    async def _find_next_study_card(self, category: str,
+                                    max_pages: int = 20) -> dict | None:
+        """分页找第一张未学习且本次未处理过的卡片"""
+        page_size = 10
+        for page_num in range(1, max_pages + 1):
+            cards, total = await self._fetch_study_cards(category, page_num, page_size)
+            if not cards:
+                return None
+            for card in cards:
+                if card["learned"]:
+                    continue
+                if not card["id"] or card["id"] in self._seen_courseids:
+                    continue
+                return card
+            if len(cards) < page_size:
+                break
+            if total and page_num * page_size >= total:
+                break
+            await self._pace(0.8, 1.5)
+        return None
+
+    async def _open_study_card(self, card: dict) -> bool:
+        """打开卡片详情页：优先点击页面上的真实卡片，找不到再回退 URL"""
+        if not self.page:
+            return False
+
+        # 1) 优先 UI 点击，和真人操作一致
+        try:
+            if card["kind"] == "recommend":
+                sel = f'li[data-id="{card["id"]}"]'
+            else:
+                sel = f'li.course-item[courseid="{card["id"]}"]'
+            el = self.page.locator(sel).first
+            if await el.count() > 0:
+                await el.scroll_into_view_if_needed()
+                await el.click()
+                for _ in range(20):
+                    await asyncio.sleep(0.5)
+                    url_now = self.page.url or ""
+                    if "detail-command.html" in url_now or "courseDetail.html" in url_now:
+                        await self._wait_content()
+                        return True
+        except Exception as e:
+            if self._running and self.page:
+                await self._warn(f"  点击卡片失败: {e}")
+
+        # 2) 卡片不在当前列表（翻页后的数据）→ 回退直接 URL
+        base = self.cfg.get("base_url", "").rstrip("/")
+        if card["kind"] == "recommend":
+            title = quote(card.get("title") or "", safe="")
+            url = (f"{base}{_RECOMMEND_DETAIL}?id={quote(card['id'])}"
+                   f"&type={card.get('type', 0)}&title={title}&ctype=recommend")
+        else:
+            url = (f"{base}{_COURSE_DETAIL}?courseid={quote(card['id'])}"
+                   f"&isStu=0&ctype={card.get('ctype', 'group')}")
+        try:
+            await self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await self._wait_content()
+            return True
+        except Exception as e:
+            if self._running and self.page:
+                await self._warn(f"  打开学习内容失败: {e}")
+            return False
+
+    async def _is_study_completed(self) -> bool:
+        """判断当前学习页是否已完成"""
+        if not self.page:
+            return False
+        try:
+            text = await self.page.evaluate(
+                """() => {
+                    const selectors = [".text-dura", ".rest-time", ".head-dura"];
+                    return selectors.map(s => {
+                        const el = document.querySelector(s);
+                        return el ? (el.innerText || el.textContent || "").trim() : "";
+                    }).join("|");
+                }"""
+            )
+            return "已完成" in (text or "")
+        except Exception:
+            return False
+
+    async def _start_learning_if_needed(self):
+        """页面有视频才点播放；PDF/图片/音频由平台自动计时"""
+        if not self.page:
+            return
+        try:
+            has_video = await self.page.evaluate(
+                """() => {
+                    const visible = (el) => {
+                        if (!el) return false;
+                        const s = getComputedStyle(el);
+                        const r = el.getBoundingClientRect();
+                        return s.display !== "none" && s.visibility !== "hidden" &&
+                               r.width > 0 && r.height > 0;
+                    };
+                    return visible(document.querySelector("#myVideo")) ||
+                           visible(document.querySelector(".wechat-play-button")) ||
+                           visible(document.querySelector("video"));
+                }"""
+            )
+            if has_video:
+                await self._click_play()
+        except Exception:
+            pass
+
+    async def _learn_next_card(self, category: str, label: str) -> bool:
+        """找一张未学卡片并完整学完，返回是否新增完成"""
+        for _attempt in range(3):
+            card = await self._find_next_study_card(category)
+            if not card:
+                return False
+            cid = card["id"]
+            self._seen_courseids.add(cid)
+            await self._info(f"  打开[{label}]: {card['title'][:50]} (id={cid[:12]})")
+            if not await self._open_study_card(card):
+                continue
+            if not self._running or not self.page:
+                return False
+            if await self._is_study_completed():
+                await self._info("  平台已标记完成，跳过")
+                continue
+            await self._start_learning_if_needed()
+            await self._info("  等待学习完成...")
+            done = await self._wait_study_done()
+            if done:
+                await self._info("  ✓ 学习完成")
+                return True
+            if not self._running or not self.page:
+                return False
+            await self._warn("  学习未完成（超时或页面异常）")
+            return False
         return False
 
-    # ---- 刷视频 ----
-    async def study_videos(self, tab: int = 2, count: int = 5) -> int:
-        """刷视频学习：集团课程(视频课程) / 单位课程 / 案例学习(含事故案例)"""
-        points = 0
-        tab_name = {2: "集团课程", 3: "单位课程", 4: "案例学习"}.get(tab, f"tab{tab}")
-
-        if tab == 2:
-            # 集团课程：只刷视频课程子tab（事故案例与案例学习tab=4内容重复，不在此回退）
-            points += await self._do_study_loop(tab_name, "视频课程", count,
-                                                 click_play=True)
-        else:
-            # 单位课程 / 案例学习：无二级导航，直接刷
-            points += await self._do_study_loop(tab_name, None, count, click_play=True)
-
-        await self._info(f"视频({tab_name})结束: +{points}分")
-        return points
-
-    async def _do_study_loop(self, score_tab: str, subtab: str | None,
-                              count: int, click_play: bool) -> int:
-        """通用刷课循环：积分页进入 -> 切子tab -> 遍历三级标签 -> 点卡片 -> [播放] -> 等倒计时"""
-        points = 0
-        label = subtab if subtab else score_tab
-        await self._info(f"→ {label}")
-
-        if not await self._goto_study_from_score(score_tab):
-            await self._warn(f"{label}: 无法从积分页进入")
+    async def _learn_cards(self, category: str, count: int) -> int:
+        """按分类学习 count 个内容，返回完成数量"""
+        info = _STUDY_CATEGORIES.get(category)
+        label = (info[1] if info and info[1] else
+                 {"recommend": "推荐", "group": "集团课程", "unit": "单位课程",
+                  "accident": "事故案例"}.get(category, category))
+        # 先让浏览器停在对应学习中心页面，避免用户看到窗口“没动静”
+        if not await self._ensure_study_tab(category):
+            await self._warn(f"{label}: 无法打开学习中心页面")
             return 0
-
-        # 切子 tab（如「专业课程」「视频课程」）
-        if subtab:
-            await self._click_subtab(subtab)
-            # 发现三级分类标签（如视频课程下的「安全警示视频」「交通违法微视频」）
-            third_tags = await self._get_third_level_tags(subtab)
-            if third_tags:
-                await self._info(f"  三级标签({len(third_tags)}): {third_tags}")
-        else:
-            third_tags = []
-
-        await self._dump_page(f"study_{label}")
-        tag_idx = 0  # 当前三级标签索引
+        points = 0
+        empty_rounds = 0
         for i in range(count):
             if not self._running:
                 break
-            await self._info(f"{label} [{i+1}/{count}]: 点击卡片...")
-            clicked = await self._click_article_card()
-            if not clicked:
-                # 当前标签无卡片 → 尝试切下一个三级标签
-                if third_tags and tag_idx + 1 < len(third_tags):
-                    tag_idx += 1
-                    await self._click_third_level_tag(third_tags[tag_idx])
-                    await self._info(f"  切三级标签 [{tag_idx+1}/{len(third_tags)}]: {third_tags[tag_idx]}")
-                    # 重试点击卡片（新标签下）
-                    clicked = await self._click_article_card()
-                if not clicked:
-                    await self._warn(f"{label}: 未找到可点击的课程")
-                    break
-            await self._wait_content()
-            if click_play:
-                await self._click_play()
-            await self._info("  等待学习倒计时...")
-            done = await self._wait_study_done()
-            if not self._running:
+            await self._info(f"{label} [{i+1}/{count}]")
+            ok = await self._learn_next_card(category, label)
+            if not self._running or not self.page:
                 break
-            if done:
+            if ok:
                 points += 1
-                await self._info(f"  ✓ 完成 +1 (累计{points})")
+                empty_rounds = 0
+                # 学完一个后回到学习中心，下一张优先用页面点击进入
+                if self._running and self.page:
+                    await self._ensure_study_tab(category)
             else:
-                await self._warn("  等待超时")
-            if not self._running:
-                break
-            # 回到积分页重新进入（确保页面状态干净）
-            if not await self._goto_study_from_score(score_tab):
-                break
-            if subtab:
-                await self._click_subtab(subtab)
-                # 恢复当前三级标签选择
-                if third_tags and tag_idx < len(third_tags):
-                    await self._click_third_level_tag(third_tags[tag_idx])
-
-        await self._info(f"{label}结束: +{points}分")
+                empty_rounds += 1
+                if empty_rounds >= 2:
+                    await self._warn(f"{label}: 没有可学习的未完成内容")
+                    break
+                await self._pace(3.0, 5.0)
+            await self._pace(2.0, 3.5)
         return points
 
-    async def _get_third_level_tags(self, parent_subtab: str) -> list[str]:
-        """发现当前页面三级分类标签（排除二级导航和'全部'筛选器）
+    # ---- 刷图文 ----
+    async def study_articles(self, count: int = 5, category: str = "recommend") -> int:
+        """刷图文：推荐页；推荐无可读时回退集团课程-专业课程"""
+        if category == "recommend":
+            await self._info("→ 图文: 推荐页")
+            points = await self._learn_cards("recommend", count)
+            if points == 0 and self._running:
+                await self._info("→ 推荐页无可读，回退到集团课程-专业课程(图文)")
+                points += await self._learn_cards("group_pro", count)
+        elif category == "group_pro":
+            await self._info("→ 图文: 集团课程-专业课程")
+            points = await self._learn_cards("group_pro", count)
+        else:
+            points = await self._learn_cards(category, count)
+        await self._info(f"图文结束: +{points}分")
+        return points
 
-        实测结构：集团课程 → 视频课程 → [全部, 安全警示视频, 交通违法微视频]
-        三级标签与二级导航共用 .study-cats__item class
-        """
-        KNOWN_SUBTABS = {"视频课程", "专业课程", "图文课程"}
-        try:
-            tags = await self.page.evaluate("""(knownNames) => {
-                const items = document.querySelectorAll('.study-cats__item');
-                const results = [];
-                for (const el of items) {
-                    const text = (el.innerText || el.textContent || '').trim();
-                    // 排除二级导航名称、排除"全部"、排除空文本
-                    if (!text || text === '全部' || knownNames.includes(text)) continue;
-                    // 排除过短的文本（可能是图标）
-                    if (text.length < 2) continue;
-                    results.push(text);
-                }
-                return results;
-            }""", list(KNOWN_SUBTABS))
-            return tags if tags else []
-        except Exception as e:
-            await self._warn(f"  发现三级标签异常: {e}")
-            return []
-
-    async def _click_third_level_tag(self, tag_name: str):
-        """点击三级分类标签（如安全警示视频、交通违法微视频）"""
-        await self._info(f"    点击三级标签: {tag_name}")
-        for sel in [
-            f'.study-cats__item:has-text("{tag_name}")',
-            f'.study-tabs__item:has-text("{tag_name}")',
-            f'span:has-text("{tag_name}")',
-        ]:
-            el = self.page.locator(sel).first
-            if await el.count() > 0 and await el.is_visible():
-                await el.click()
-                await asyncio.sleep(1)
-                return
-        await self._warn(f"    未找到三级标签: {tag_name}")
-
-    async def _click_study_tab(self, tab_name: str) -> bool:
-        """点击页面顶部一级 study-tabs 标签（如事故案例 data-tab="accident"）
-
-        与 _click_subtab 不同：_click_subtab 操作 .study-cats__item（二级导航），
-        本方法操作 .study-tabs__item（一级页面 tab，切换整个内容区）
-        返回 True 表示点击成功
-        """
-        await self._info(f"  切换到 study-tab: {tab_name}")
-        for sel in [
-            f'.study-tabs__item:has-text("{tab_name}")',
-            f'[data-tab]:has-text("{tab_name}")',
-            f'div:has-text("{tab_name}")',
-        ]:
-            el = self.page.locator(sel).first
-            if await el.count() > 0 and await el.is_visible():
-                await el.click()
-                await asyncio.sleep(1.5)
-                await self._wait_content()
-                return True
-        await self._warn(f"  未找到 study-tab: {tab_name}")
-        return False
-
-    async def _click_subtab(self, subtab_name: str):
-        """在集团课程页面点击二级导航（视频课程/专业课程）"""
-        await self._info(f"  切换到: {subtab_name}")
-        for sel in [
-            f'.study-cats__item:has-text("{subtab_name}")',
-            f'span:has-text("{subtab_name}")',
-            f'div:has-text("{subtab_name}")',
-        ]:
-            el = self.page.locator(sel).first
-            if await el.count() > 0 and await el.is_visible():
-                await el.click()
-                await asyncio.sleep(1.5)
-                return
-        await self._warn(f"  未找到子tab: {subtab_name}")
-
-    async def _click_study_btn(self) -> bool:
-        """在当前页找'去学习'按钮并点击"""
-        for sel in [
-            ':text("去学习")',
-            'button:has-text("去学习")',
-            'a:has-text("去学习")',
-            '[class*="go-study"]',
-        ]:
-            try:
-                el = self.page.locator(sel).first
-                if await el.count() > 0 and await el.is_visible(timeout=1000):
-                    await el.click()
-                    await asyncio.sleep(1)
-                    return True
-            except Exception:
-                continue
-        return False
+    # ---- 刷视频 ----
+    async def study_videos(self, tab: int = 2, count: int = 5) -> int:
+        """刷视频：2=集团课程-视频课程，3=单位课程，4=事故案例"""
+        category_map = {2: "group_video", 3: "unit", 4: "accident"}
+        label_map = {2: "集团课程-视频课程", 3: "单位课程", 4: "事故案例"}
+        category = category_map.get(tab)
+        if not category:
+            await self._warn(f"  未知视频分类 tab={tab}")
+            return 0
+        label = label_map[tab]
+        await self._info(f"→ 视频: {label}")
+        points = await self._learn_cards(category, count)
+        await self._info(f"视频({label})结束: +{points}分")
+        return points
 
     async def _click_play(self):
         """点击视频播放按钮 + JS video.play() 兜底
@@ -845,6 +1007,8 @@ class TaskExecutor:
           video#myVideo (controls=false, 自定义控件)
         策略：force=True 绕过 Playwright actionability 检查（覆盖层可能拦截）
         """
+        if not self.page:
+            return
         # 策略1：覆盖层大播放按钮（最可靠的入口）
         for sel in [
             ".wechat-play-button",              # 实测：覆盖层播放按钮
@@ -903,40 +1067,118 @@ class TaskExecutor:
         await self._warn("  未找到播放按钮，也未找到 video 元素")
 
     async def _wait_study_done(self, timeout: int = 36000) -> bool:
-        """等待学习倒计时，显示进度，响应停止信号"""
+        """等待学习倒计时，显示进度，响应停止信号
+
+        新版完成标志：.text-dura / .rest-time 显示「已完成」。
+        视频页只有播放时才计时，剩余时间长时间不动会重试播放。
+        """
+        last_rest = ""
+        last_change = time.time()
+        last_retry = 0.0
         for sec in range(timeout):
             if not self._running:
                 await self._info("  收到停止信号，中断等待")
                 return False
+            if not self.page:
+                await self._info("  浏览器已关闭，停止等待")
+                return False
             await asyncio.sleep(1)
             try:
-                body = await self.page.text_content("body") or ""
-                if "已完成" in body:
+                if await self._is_study_completed():
                     await self._info(f"  等待 {sec+1}秒后完成")
                     return True
+
+                rest_text = await self.page.evaluate(
+                    """() => {
+                        const el = document.querySelector(".text-dura, .rest-time, .head-dura");
+                        return el ? (el.innerText || el.textContent || "").trim() : "";
+                    }"""
+                ) or ""
+                if rest_text != last_rest:
+                    last_rest = rest_text
+                    last_change = time.time()
+
+                # 视频页倒计时长时间不动 → 可能暂停了，重试播放
+                if (last_rest and time.time() - last_change > 30
+                        and time.time() - last_retry > 60):
+                    last_retry = time.time()
+                    await self._info("  倒计时未变化，重试播放...")
+                    await self._start_learning_if_needed()
+
                 # 每15秒报告进度
                 if (sec + 1) % 15 == 0:
-                    # 尝试读取剩余时间
-                    rest_text = ""
-                    try:
-                        rest_el = self.page.locator(".text-dura, .rest-time, [class*='rest']").first
-                        if await rest_el.count() > 0:
-                            rest_text = " 剩余:" + ((await rest_el.text_content()) or "").strip()
-                    except Exception:
-                        pass
-                    await self._info(f"  学习中... 已等{sec+1}秒{rest_text}")
-            except Exception:
-                pass
+                    suffix = f" 剩余:{last_rest}" if last_rest else ""
+                    await self._info(f"  学习中... 已等{sec+1}秒{suffix}")
+            except Exception as e:
+                if not self._running or not self.page:
+                    await self._info("  浏览器已关闭，停止等待")
+                    return False
+                await self._warn(f"  等待学习状态异常: {e}")
         await self._warn(f"  等待 {timeout}秒 超时")
         return False
 
     # ---- 每日练习 ----
-    async def do_exercises(self, api_key: str = "") -> dict:
+    async def _wait_exercise_ready(self, timeout: int = 20) -> bool:
+        """等待每日练习题目卡片出现"""
+        if not self.page:
+            return False
+        for _ in range(max(1, timeout * 2)):
+            if not self._running or not self.page:
+                return False
+            try:
+                if await self.page.locator(".ue-question-card, .ue-no-data").count() > 0:
+                    return True
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+        return False
+
+    async def _click_next_question(self, old_title: str = "") -> bool:
+        """点击「下一题」并等待题干变化
+
+        新版每日练习按钮文字从「刷新」改为「下一题」，class=ue-refresh-btn。
+        """
+        if not self.page or not self._running:
+            return False
+        try:
+            btn = self.page.locator(".ue-refresh-btn").first
+            if await btn.count() == 0:
+                btn = self.page.locator('button:has-text("下一题")').first
+            if await btn.count() == 0:
+                await self._warn("  未找到「下一题」按钮")
+                return False
+            await btn.click()
+        except Exception as e:
+            if self._running and self.page:
+                await self._warn(f"  点击「下一题」失败: {e}")
+            return False
+
+        old_norm = _norm_text(old_title)
+        for _ in range(30):
+            await asyncio.sleep(0.5)
+            try:
+                if await self.page.locator(".ue-no-data").count() > 0:
+                    return True
+                title_el = self.page.locator(".ue-question-title").first
+                if await title_el.count() > 0:
+                    new_title = (await title_el.text_content() or "").strip()
+                    if _norm_text(new_title) != old_norm:
+                        return True
+            except Exception:
+                pass
+        await self._warn("  等待下一题超时（题干未变化）")
+        return False
+
+    # ---- 每日练习 ----
+    async def do_exercises(self, api_key: str = "", max_questions: int = 20) -> dict:
         base = self.cfg.get("base_url", "").rstrip("/")
         url = f"{base}/src/apps/app-aqhb/src/components/studentWeb/user-exercise/index.html?tab=2"
         result = {"points": 0, "correct": 0, "wrong": 0}
 
         await self._info("→ 每日练习")
+        if not self.page:
+            await self._warn("浏览器未启动，无法执行每日练习")
+            return result
 
         # 本地日计数检查（替代原来读平台周累计 #dtStudyWeek 的错误逻辑）
         today_pts = self._get_today_exercise_points()
@@ -944,8 +1186,9 @@ class TaskExecutor:
             await self._info(f"今日练习已获 {today_pts} 分（已达日上限），跳过")
             return result
 
-        await self.page.goto(url, wait_until="networkidle", timeout=30000)
+        await self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
         await self._wait_content()
+        await self._wait_exercise_ready()
         await self._dump_page("exercise")
 
         # 拦截 submitAnswer（用列表包装避免闭包引用问题）
@@ -963,8 +1206,8 @@ class TaskExecutor:
         self.page.on("response", on_resp)
 
         try:
-            for i in range(20):
-                if not self._running:
+            for i in range(max_questions):
+                if not self._running or not self.page:
                     break
                 if result["points"] >= 3:
                     await self._info("今日练习已满3分（本地计数）")
@@ -975,6 +1218,14 @@ class TaskExecutor:
                     if today_pts >= 3:
                         await self._info(f"每日练习已达上限({today_pts}分)，停止")
                         break
+
+                # 题目做完 / 加载失败
+                try:
+                    if await self.page.locator(".ue-no-data").count() > 0:
+                        await self._info("  今日暂无练习题目，结束")
+                        break
+                except Exception:
+                    pass
 
                 submit_holder[0] = None  # 清空上次响应
                 await self._info(f"题目 [{i+1}]: 提取题目...")
@@ -988,22 +1239,23 @@ class TaskExecutor:
                 except Exception:
                     pass
 
-                # 用 JS 从页面提取选项元素
+                # 用 JS 从页面提取选项
                 q_text, opts = await self._extract_options()
 
                 if opts:
-                    await self._solve_multiple_choice(q_text, opts, qtype, api_key, submit_holder, result)
-                elif "填空" in qtype:
-                    await self._solve_fill_blank(q_text, qtype, api_key, submit_holder, result)
+                    advanced = await self._solve_multiple_choice(
+                        q_text, opts, qtype, api_key, submit_holder, result)
+                elif "填空" in qtype or "简答" in qtype:
+                    advanced = await self._solve_fill_blank(
+                        q_text, qtype, api_key, submit_holder, result)
                 else:
                     await self._info(f"  题型: {qtype}，跳过")
-                    refresh_btn = self.page.locator('button:has-text("刷新")').first
-                    if await refresh_btn.count() > 0:
-                        await refresh_btn.click()
-                        await asyncio.sleep(2)
-                        continue
+                    advanced = await self._click_next_question(q_text)
 
-                # 已在上方 if/elif 分支中处理，这里不需要额外代码
+                if not advanced:
+                    await self._warn("  无法获取下一题，停止")
+                    break
+                await self._wait_exercise_ready()
 
         finally:
             self.page.remove_listener("response", on_resp)
@@ -1012,26 +1264,24 @@ class TaskExecutor:
         return result
 
     async def _extract_options(self) -> tuple[str, list[dict]]:
-        """用 JS 提取题目和选项（兼容每日练习 + 模拟考试）"""
+        """用 JS 提取每日练习的题干和选项"""
+        if not self.page:
+            return "", []
         try:
             r = await self.page.evaluate("""() => {
                 let question = '';
-                const body = document.body;
 
                 // 清除旧标记
                 document.querySelectorAll('[data-ow-opt]').forEach(el => el.removeAttribute('data-ow-opt'));
 
-                // 策略1: .ue-option-item（每日练习）+ 兜底选择器
+                // 每日练习选项（新版仍是 .ue-option-item）
                 let items = document.querySelectorAll('.ue-option-item, .option-item, .answer-item, li[class*="option"]');
 
-                // 策略2: radio input + label（模拟考试）— 找每个题目的选项
+                // 兜底：radio input + label（防止平台再改版）
                 if (items.length === 0) {
-                    // 考试页：所有题目一起显示，取第一个可见题目的选项
-                    const firstQ = document.querySelector('.question-item, .ques-item, [class*="question-item"]');
-                    const scope = firstQ || body;
+                    const scope = document.querySelector('.ue-question-card') || document.body;
                     const radios = scope.querySelectorAll('input[type="radio"]');
                     if (radios.length > 0) {
-                        // 将 radio 的父元素标记为选项
                         const seen = new Set();
                         const opts = [];
                         radios.forEach(radio => {
@@ -1055,14 +1305,27 @@ class TaskExecutor:
                     }
                 });
 
-                // 题干：多选择器兜底，防止平台改版后取不到题目文本
-                const titleEl = document.querySelector(
-                    '.ue-question-title, .ques-item-tip .content, [class*="question-title"], ' +
-                    '.question-title, .subject-text, .exam-question, .topic, ' +
-                    'h3, h4, .title, [class*="question"]'
-                );
-                if (titleEl) {
-                    question = titleEl.innerText || titleEl.textContent || '';
+                // 题干：必须在题目卡片内按优先级找，避免误抓页面顶部的 .title（如「每日练习」）
+                const card = document.querySelector('.ue-question-card');
+                const scope = card || document;
+                const selectors = [
+                    '.ue-question-title',
+                    '[class*="question-title"]',
+                    '.question-title',
+                    '.subject-text',
+                    '.topic',
+                    '.exam-question',
+                    'h3',
+                    'h4',
+                    '.title',
+                    '[class*="question"]'
+                ];
+                for (const sel of selectors) {
+                    const el = scope.querySelector(sel);
+                    if (el) {
+                        question = el.innerText || el.textContent || '';
+                        break;
+                    }
                 }
 
                 return {question: question.trim(), options: opts};
@@ -1099,8 +1362,10 @@ class TaskExecutor:
 
     # ---- 选择题解答 ----
     async def _solve_multiple_choice(self, q_text: str, opts: list, qtype: str,
-                                     api_key: str, submit_holder: list, result: dict):
-        """解答选择题：题库 → AI → 点击 → 提交 → 入库 → 刷新"""
+                                     api_key: str, submit_holder: list, result: dict) -> bool:
+        """解答选择题：题库 → AI → 点击 → 提交 → 入库 → 下一题"""
+        if not self.page or not self._running:
+            return False
         await self._info(f"  题型: {qtype} | 题干: {q_text[:60] if q_text else '(空)'}...")
         await self._info(f"  选项: {[o['text'][:20] for o in opts]}")
 
@@ -1111,7 +1376,6 @@ class TaskExecutor:
             await self._warn("  ⚠ API Key 为空！不会调用 AI，将默认选A")
 
         # 先登记题目到题库（答案待定）
-        bank_key = ""
         if q_text and opts:
             bank_key = record_answer(q_text, opts, "")  # 空答案 = 仅登记
             if bank_key:
@@ -1152,14 +1416,19 @@ class TaskExecutor:
                         await self._warn(f"  点击选项 {letter} 失败")
         await asyncio.sleep(0.5)
 
-        # 提交
-        submit_btn = self.page.locator('button:has-text("提交答案")').first
+        # 提交（新版按钮 class=ue-submit-btn）
+        submit_holder[0] = None
+        submit_btn = self.page.locator(".ue-submit-btn").first
+        if await submit_btn.count() == 0:
+            submit_btn = self.page.locator('button:has-text("提交答案")').first
         if await submit_btn.count() > 0:
             if await submit_btn.get_attribute("disabled") is not None:
                 await self._warn("  提交按钮已禁用")
-                return
-            await submit_btn.click()
-            await asyncio.sleep(2)
+            else:
+                await submit_btn.click()
+                await asyncio.sleep(2)
+        else:
+            await self._warn("  未找到「提交答案」按钮")
 
         # 提取正确答案（三路并行）
         correct = None
@@ -1168,7 +1437,7 @@ class TaskExecutor:
         # 方式1: submitAnswer API 响应（最权威）
         sd = submit_holder[0] or {}
         correct = extract_correct_from_response(sd)
-        if not correct and sd.get("data"):
+        if sd.get("data"):
             d = sd["data"]
             # trueAnswer 字段 + wfAnswer 判断对错
             ta = d.get("trueAnswer", "")
@@ -1179,9 +1448,9 @@ class TaskExecutor:
             if wf == "正确":
                 is_correct = True
 
-        # 方式2: 检测"回答正确" toast
+        # 方式2: 检测"回答正确" toast（新版仍用 layer.msg）
         if not is_correct:
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.5)
             try:
                 toast = self.page.locator('.layui-layer-msg, .layui-layer-dialog:has-text("正确")')
                 if await toast.count() > 0:
@@ -1192,23 +1461,12 @@ class TaskExecutor:
             except Exception:
                 pass
 
-        # 方式3: 页面DOM — 找绿色高亮选项（正确选项）
+        # 方式3: 页面 DOM — 新版错题选项带 .ue-option-correct 类
         if not correct:
             try:
                 correct = await self.page.evaluate("""() => {
-                    const items = document.querySelectorAll('.ue-option-item');
-                    for (const el of items) {
-                        const style = el.getAttribute('style') || '';
-                        const classList = el.className || '';
-                        // 绿色边框/背景 = 正确答案
-                        if (style.includes('green') || style.includes('rgb(0, 128') || style.includes('#4caf50') ||
-                            classList.includes('correct') || classList.includes('right') || classList.includes('success')) {
-                            const t = el.innerText || '';
-                            const m = t.match(/^([A-F])/);
-                            if (m) return m[1];
-                        }
-                    }
-                    return null;
+                    const el = document.querySelector('.ue-option-item.ue-option-correct');
+                    return el ? (el.getAttribute('data-option') || null) : null;
                 }""")
             except Exception:
                 pass
@@ -1244,71 +1502,77 @@ class TaskExecutor:
                 result["wrong"] += 1
                 await self._warn(f"  ✗ 答错 选{clicked_content or answer} 正确{correct_content or correct}")
         elif is_correct:
-            # toast显示正确 → 我们点的内容就是正确答案
+            # toast/接口显示正确 → 我们点的内容就是正确答案
             if q_text and opts:
                 record_answer(q_text, opts, clicked_content or answer, source="submitAnswer")
             result["correct"] += 1
             result["points"] += 1
             self._add_today_exercise_point()
-            await self._info(f"  ✓ 答对! (toast)")
+            await self._info("  ✓ 答对! (wfAnswer=正确)")
         else:
-            await self._warn(f"  无法确认答案，跳过入库")
-            # 不记分，等系统确认
+            await self._warn("  无法确认答案，跳过入库")
 
-        # 提交后点刷新获取下一题（平台不再自动刷新，统一手动点）
-        refresh_btn = self.page.locator('button:has-text("刷新")').first
-        if await refresh_btn.count() > 0:
-            await refresh_btn.click()
-            await asyncio.sleep(2)
-        else:
-            await asyncio.sleep(2)
+        # 提交后点「下一题」获取新题（平台不会自动跳转）
+        return await self._click_next_question(q_text)
 
-    # ---- 填空题解答 ----
+    # ---- 填空题 / 简答题解答 ----
     async def _solve_fill_blank(self, q_text: str, qtype: str,
-                                api_key: str, submit_holder: list, result: dict):
-        """解答填空题：AI 生成答案 → 填入 → 提交 → 入库 → 刷新"""
-        await self._info(f"  题型: {qtype} | 题目: {q_text[:80]}...")
+                                api_key: str, submit_holder: list, result: dict) -> bool:
+        """解答填空题/简答题：AI 生成答案 → 填入 → 提交 → 入库 → 下一题"""
+        if not self.page or not self._running:
+            return False
+        await self._info(f"  题型: {qtype} | 题目: {q_text[:80] if q_text else '(空)'}...")
 
         if not api_key:
-            await self._warn("  填空题需要 AI API Key")
-            refresh_btn = self.page.locator('button:has-text("刷新")').first
-            if await refresh_btn.count() > 0:
-                await refresh_btn.click()
-            return
+            await self._warn("  填空题/简答题需要 AI API Key")
+            return await self._click_next_question(q_text)
 
-        # 找填空输入框
+        is_essay = "简答" in (qtype or "")
         try:
-            blank_count = await self.page.evaluate("""() => {
-                const inputs = document.querySelectorAll('.ue-fill-list input, .ue-fill-item input, input[type="text"]');
-                return inputs.length;
-            }""")
+            if is_essay:
+                blank_count = 1
+            else:
+                blank_count = await self.page.evaluate(
+                    """() => document.querySelectorAll('.ue-fill-input').length"""
+                )
+                if not blank_count:
+                    blank_count = await self.page.evaluate(
+                        """() => document.querySelectorAll(
+                            '.ue-fill-list input, .ue-fill-item input, input[type="text"]').length"""
+                    )
         except Exception:
             blank_count = 1
-
-        if blank_count == 0:
+        if not blank_count:
             blank_count = 1
 
         await self._info(f"  检测到 {blank_count} 个空，调用 AI...")
         ai_key, ai_base, ai_model, provider = self._ai_params()
         answers = query_ai_fill(f"<p>{q_text}</p>", blank_count, ai_key, ai_base,
-                                question_type=qtype, provider=provider, model=ai_model)
+                                question_type=qtype or ("简答题" if is_essay else "填空题"),
+                                provider=provider, model=ai_model)
 
         if not answers:
             await self._warn("  AI 填空返回空，跳过")
-            refresh_btn = self.page.locator('button:has-text("刷新")').first
-            if await refresh_btn.count() > 0:
-                await refresh_btn.click()
-            return
+            return await self._click_next_question(q_text)
 
         await self._info(f"  AI → {answers}")
 
         # 填入答案
         try:
-            for j, ans in enumerate(answers):
-                await self.page.evaluate(f"""(idx, text) => {{
-                    const inputs = document.querySelectorAll('.ue-fill-list input, .ue-fill-item input, input[type="text"]');
-                    if (inputs[idx]) {{ inputs[idx].value = text; inputs[idx].dispatchEvent(new Event('input')); }}
-                }}""", j, ans)
+            if is_essay:
+                box = self.page.locator(".ue-essay-input").first
+                if await box.count() > 0:
+                    await box.fill(answers[0])
+            else:
+                inputs = self.page.locator(".ue-fill-input")
+                n = await inputs.count()
+                if n == 0:
+                    inputs = self.page.locator(
+                        '.ue-fill-list input, .ue-fill-item input, input[type="text"]')
+                    n = await inputs.count()
+                for j, ans in enumerate(answers[:max(n, 1)]):
+                    if j < n:
+                        await inputs.nth(j).fill(ans)
             await self._info(f"  已填入 {len(answers)} 个答案")
         except Exception as e:
             await self._warn(f"  填入失败: {e}")
@@ -1316,31 +1580,53 @@ class TaskExecutor:
         await asyncio.sleep(0.5)
 
         # 提交
-        submit_btn = self.page.locator('button:has-text("提交答案")').first
+        submit_holder[0] = None
+        submit_btn = self.page.locator(".ue-submit-btn").first
+        if await submit_btn.count() == 0:
+            submit_btn = self.page.locator('button:has-text("提交答案")').first
         if await submit_btn.count() > 0:
             if await submit_btn.get_attribute("disabled") is not None:
                 await self._warn("  提交按钮已禁用")
-                return
+                return await self._click_next_question(q_text)
             await submit_btn.click()
             await asyncio.sleep(2)
-
-        # 从 API 响应提取正确答案
-        # 从 API 响应提取
-        correct = extract_correct_from_response(submit_holder[0] or {})
-        if correct:
-            await self._info(f"  正确答案: {correct}")
         else:
-            await self._info("  填空题已提交（答案未知）")
+            await self._warn("  未找到「提交答案」按钮")
+            return await self._click_next_question(q_text)
 
-        result["correct"] += 1  # 乐观计分
-        result["points"] += 1
-        self._add_today_exercise_point()
+        # 从 API 响应判断对错
+        sd = submit_holder[0] or {}
+        d = sd.get("data") or {}
+        wf = (d.get("wfAnswer") or "").strip()
+        correct_text = str(d.get("trueAnswer") or "").strip()
 
-        # 刷新
-        refresh_btn = self.page.locator('button:has-text("刷新")').first
-        if await refresh_btn.count() > 0:
-            await refresh_btn.click()
-        await asyncio.sleep(2)
+        # 兜底：页面标记
+        if not wf:
+            try:
+                wrong_n = await self.page.locator(".ue-fill-wrong, .ue-option-wrong, .ue-essay-correct-answer").count()
+                right_n = await self.page.locator(".ue-fill-correct, .ue-option-correct").count()
+                if right_n > 0 and wrong_n == 0:
+                    wf = "正确"
+                elif wrong_n > 0:
+                    wf = "错误"
+            except Exception:
+                pass
+
+        if wf == "正确":
+            result["correct"] += 1
+            result["points"] += 1
+            self._add_today_exercise_point()
+            if q_text:
+                stored = correct_text or (answers[0] if answers else "")
+                record_answer(q_text, [], stored, source="submitAnswer")
+            await self._info("  ✓ 答对!")
+        elif wf == "错误":
+            result["wrong"] += 1
+            await self._warn(f"  ✗ 答错，正确答案: {correct_text or '(未知)'}")
+        else:
+            await self._warn("  无法确认填空/简答结果，不计分")
+
+        return await self._click_next_question(q_text)
 
     # ---- 每日练习本地日计数（替代平台周累计检查） ----
     # 平台 #dtStudyWeek 是周累计值，不能用来判断当日是否已达上限
@@ -1410,304 +1696,6 @@ class TaskExecutor:
         except Exception:
             pass
         return 0
-
-    # ---- 模拟考试 ----
-    async def do_mock_exam(self, api_key: str = "", exam_index: int = 0) -> dict:
-        """模拟考试：列出考试 → 选择指定考试 → 答题 → 提交试卷"""
-        base = self.cfg.get("base_url", "").rstrip("/")
-        url = f"{base}/src/apps/app-aqhb/src/components/studentWeb/user-exercise/index.html"
-        result = {"points": 0, "correct": 0, "total": 0}
-
-        await self._info("→ 模拟考试")
-        await self.page.goto(url, wait_until="networkidle", timeout=30000)
-        await self._wait_content()
-
-        mock_tab = self.page.locator('.tab[data-type="mock"]').first
-        if await mock_tab.count() > 0:
-            await mock_tab.click()
-            await self._wait_content()
-            await self._info("  已切换到模拟考试")
-
-        # 列出可用考试
-        exams = await self.page.evaluate("""() => {
-            const items = document.querySelectorAll('li.startexam');
-            return Array.from(items).map(item => ({
-                name: (item.querySelector('._name')?.innerText||'').trim(),
-                btn: !!item.querySelector('.ue-start-exam')
-            }));
-        }""")
-        if exams:
-            await self._info(f"  共{len(exams)}场考试: {[e['name'][:20] for e in exams[:5]]}")
-
-        # 按用户选择的索引
-        if exam_index and exam_index < len(exams):
-            chosen = exams[exam_index]
-        else:
-            chosen = exams[0]
-        await self._info(f"  → 选择: {chosen['name'][:50]}")
-
-        start_btn = self.page.locator('.ue-start-exam').nth(exam_index if exam_index else 0)
-        if await start_btn.count() == 0:
-            await self._warn("未找到开始考试按钮")
-            return result
-        await start_btn.click()
-        await self._wait_content()
-
-        # 展开所有折叠的题型区域
-        await self.page.evaluate("""() => {
-            document.querySelectorAll('button._on, button[ques_type], .layui-btn._on').forEach(btn => btn.click());
-        }""")
-        await asyncio.sleep(1)
-
-        # 找所有题目容器
-        q_containers = await self.page.evaluate("""() => {
-            return document.querySelectorAll('.ques-item').length;
-        }""")
-
-        await self._info(f"  共 {q_containers} 道题")
-        skip_streak = 0  # 连续跳过计数，达到阈值就停止
-
-        for qi in range(q_containers):
-            if not self._running:
-                break
-            if skip_streak >= 10:  # 连续10题无法回答就停
-                await self._info(f"  连续{skip_streak}题无法回答，停止答题")
-                break
-
-            # 静默滚动到当前题目（不触发动画）
-            await self.page.evaluate(f"""(idx) => {{
-                const items = document.querySelectorAll('.ques-item');
-                if (items[idx]) {{
-                    items[idx].scrollIntoView({{block: 'center', behavior: 'instant'}});
-                }}
-            }}""", qi)
-            await asyncio.sleep(0.1)
-
-            # 提取当前题目的选项
-            q_text, opts = await self._extract_options_for_question(qi)
-
-            if opts:
-                # ---- 选择题/判断题（含多选检测） ----
-                qtype = await self.page.evaluate(f"""(idx) => {{
-                    const items = document.querySelectorAll('.ques-item');
-                    const box = items[idx]?.closest('.ques-box');
-                    if (!box) return '单选';
-                    if (box.classList.contains('multiple-box')) return '多选';
-                    if (box.classList.contains('judge-box')) return '判断';
-                    if (box.classList.contains('fill-box')) return '填空';
-                    if (box.classList.contains('write-box')) return '简答';
-                    return '单选';
-                }}""", qi)
-                is_multi = qtype == '多选'
-                is_judge = qtype == '判断'
-                qtype_label = "多选题" if is_multi else ("判断题" if is_judge else "")
-                await self._info(f"  题[{qi+1}]{'(多选)' if is_multi else ''}: {q_text[:60] if q_text else '(空)'}...")
-                # 诊断日志：帮助排查"只选A不调API"问题
-                if not q_text:
-                    await self._warn("    ⚠ 题干为空！页面元素可能已改版，无法匹配题库也无法调API")
-                if not api_key:
-                    await self._warn("    ⚠ API Key 为空！不会调用 AI，将默认选A")
-                answer = lookup_question(q_text, opts) if q_text else None
-                if answer:
-                    await self._info(f"    题库→{answer}")
-                elif q_text and api_key:
-                    await self._info(f"    题库未命中，调用 AI...")
-                    ai_key, ai_base, ai_model, provider = self._ai_params()
-                    answer = query_ai(f"<p>{q_text}</p>", opts, ai_key, ai_base,
-                                      question_type=qtype_label, provider=provider, model=ai_model)
-                    if answer:
-                        await self._info(f"    AI→{answer}")
-                    else:
-                        await self._warn("    AI 返回空")
-                if not answer:
-                    await self._warn(f"    无答案来源，默认{'全选ABCD' if is_multi else '选A'}")
-                if is_multi:
-                    ans_letters = (answer or "ABCD").upper()
-                    indices = [ord(c) - ord('A') for c in ans_letters if 'A' <= c <= 'F']
-                    # 专家建议：逐个重新查询 + 返回详细调试信息
-                    debug = await self.page.evaluate("""([idx, idxs]) => {
-                        const items = document.querySelectorAll('.ques-item');
-                        const qEl = items[idx];
-                        if (!qEl) return {ok: false, reason: 'no question'};
-
-                        // 记录点击前状态
-                        const beforeChecked = [...qEl.querySelectorAll('input[type=checkbox]')].map(x => x.checked);
-                        const beforeClass = [...qEl.querySelectorAll('.layui-form-checkbox')].map(x => x.className);
-
-                        // 逐个点击（每次重新查询，layui 重渲染后旧引用失效）
-                        const clicked = [];
-                        for (const i of idxs) {
-                            const cbList = qEl.querySelectorAll('.layui-form-checkbox');
-                            const cb = cbList[i];
-                            if (cb) {
-                                cb.click();
-                                clicked.push(i);
-                            }
-                        }
-
-                        // 记录点击后状态
-                        const afterChecked = [...qEl.querySelectorAll('input[type=checkbox]')].map(x => x.checked);
-                        const afterClass = [...qEl.querySelectorAll('.layui-form-checkbox')].map(x => x.className);
-
-                        return {
-                            total: qEl.querySelectorAll('.layui-form-checkbox').length,
-                            clicked: clicked,
-                            beforeChecked: beforeChecked,
-                            afterChecked: afterChecked,
-                            beforeClass: beforeClass,
-                            afterClass: afterClass,
-                            htmlSample: qEl.innerHTML.substring(0, 500)
-                        };
-                    }""", [qi, indices])
-
-                    await self._info(f"    多选debug: total={debug.get('total')} clicked={debug.get('clicked')}")
-                    await self._info(f"    before: {debug.get('beforeChecked')} | after: {debug.get('afterChecked')}")
-                    await self._info(f"    class: {[c[-30:] for c in (debug.get('afterClass') or [])]}")
-                else:
-                    answer = answer or "A"
-                    for a in answer.upper():
-                        if 'A' <= a <= 'F':
-                            try:
-                                el = self.page.locator(f'[data-ow-opt="{a}"]').first
-                                if await el.count() > 0:
-                                    await el.click()
-                                    await asyncio.sleep(0.1)
-                            except Exception:
-                                pass
-                result["total"] += 1
-                result["correct"] += 1
-                if q_text:
-                    record_answer(q_text, opts, answer, source=self.cfg.get('ai_model', ''))
-                skip_streak = 0
-            else:
-                # ---- 填空题 ----
-                blanks = await self.page.evaluate(f"""(idx) => {{
-                    const items = document.querySelectorAll('.ques-item');
-                    const qEl = items[idx];
-                    if (!qEl) return 0;
-                    return qEl.querySelectorAll('input.layui-text, input[type="text"], textarea.layui-textarea, textarea').length;
-                }}""", qi)
-
-                if blanks > 0 and api_key and q_text:
-                    # 检测题型：textarea = 简答, input = 填空
-                    has_textarea = await self.page.evaluate(f"""(idx) => {{
-                        const items = document.querySelectorAll('.ques-item');
-                        return items[idx]?.querySelectorAll('textarea').length || 0;
-                    }}""", qi)
-                    fill_type = "简答题" if has_textarea else "填空题"
-                    await self._info(f"  题[{qi+1}] {fill_type}: {q_text[:40]}...")
-                    ai_key, ai_base, ai_model, provider = self._ai_params()
-                    answers = query_ai_fill(f"<p>{q_text}</p>", blanks, ai_key, ai_base,
-                                            question_type=fill_type, provider=provider, model=ai_model)
-                    if answers:
-                        await self._info(f"    AI→{answers}")
-                        # 逐个填入（用列表参数避免多参数报错）
-                        for bi, ans in enumerate(answers[:blanks]):
-                            await self.page.evaluate("""([idx, blankIdx, text]) => {
-                                const items = document.querySelectorAll('.ques-item');
-                                const inputs = items[idx].querySelectorAll('input.layui-text, input[type="text"], textarea.layui-textarea, textarea');
-                                if (inputs[blankIdx]) {
-                                    inputs[blankIdx].value = text;
-                                    inputs[blankIdx].dispatchEvent(new Event('input', {bubbles: true}));
-                                    inputs[blankIdx].dispatchEvent(new Event('change', {bubbles: true}));
-                                }
-                            }""", [qi, bi, ans])
-                        result["total"] += 1
-                        result["correct"] += 1
-                        # 录题库
-                        if q_text:
-                            record_answer(q_text, [], answers[0] if len(answers) == 1 else "||".join(answers), source=self.cfg.get('ai_model', ''))
-                        skip_streak = 0
-                    else:
-                        # 重试一次
-                        await asyncio.sleep(1)
-                        answers = query_ai_fill(f"<p>{q_text}</p>", blanks, ai_key, ai_base,
-                                                question_type=fill_type, provider=provider, model=ai_model)
-                        if answers:
-                            await self._info(f"    重试成功→{answers}")
-                            for bi, ans in enumerate(answers[:blanks]):
-                                await self.page.evaluate("""([idx, blankIdx, text]) => {
-                                    const items = document.querySelectorAll('.ques-item');
-                                    const inputs = items[idx].querySelectorAll('input.layui-text, input[type="text"], textarea.layui-textarea, textarea');
-                                    if (inputs[blankIdx]) {
-                                        inputs[blankIdx].value = text;
-                                        inputs[blankIdx].dispatchEvent(new Event('input', {bubbles: true}));
-                                    }
-                                }""", [qi, bi, ans])
-                            result["total"] += 1
-                            result["correct"] += 1
-                            skip_streak = 0
-                        else:
-                            skip_streak += 1
-                            await self._warn(f"  题[{qi+1}] AI填空失败(已重试)")
-                else:
-                    skip_streak += 1
-                    await self._warn(f"  题[{qi+1}] 无选项无输入，跳过")
-
-            await asyncio.sleep(0.3)  # 放慢
-
-        # 不自动提交，提示用户手动提交
-        await self._info(f"  === 全部 {result['total']} 题已回答 ===")
-        await self._info("  ⚠ 请在浏览器中手动提交试卷 + 签名")
-        result["points"] = result["correct"]
-        await self._info(f"模拟考试: {result['correct']}/{result['total']}, 预计+{result['points']}分")
-        return result
-
-    async def _extract_options_for_question(self, qi: int) -> tuple[str, list[dict]]:
-        """提取第 qi 道题的题干和选项（考试页专用）"""
-        try:
-            r = await self.page.evaluate("""(idx) => {
-                const items = document.querySelectorAll('.ques-item');
-                const qEl = items[idx];
-                if (!qEl) return {question: '', options: []};
-
-                // 清除所有旧标记
-                document.querySelectorAll('[data-ow-opt]').forEach(el => el.removeAttribute('data-ow-opt'));
-
-                // 找 .radio-box 元素，根据题型取不同的点击目标
-                const radioBoxes = qEl.querySelectorAll('.radio-box');
-                const firstInput = qEl.querySelector('input');
-                const isCheckbox = firstInput && firstInput.type === 'checkbox';
-                const labels = ['A','B','C','D','E','F'];
-                const result = [];
-                radioBoxes.forEach((box, i) => {
-                    if (i < 6) {
-                        // checkbox → .layui-form-checkbox, radio → .layui-form-radio
-                        const clickTarget = isCheckbox
-                            ? box.querySelector('.layui-form-checkbox')
-                            : box.querySelector('.layui-form-radio');
-                        if (clickTarget) {
-                            clickTarget.setAttribute('data-ow-opt', labels[i]);
-                        }  // 只标记实际点击目标，不标记外层 box
-                        const text = (box.innerText || box.textContent || '').trim().replace(/\\\\n/g, ' ');
-                        result.push({text: text});
-                    }
-                });
-
-                // 题干
-                const contentEl = qEl.querySelector('.ques-item-tip .content, .content');
-                const question = contentEl ? (contentEl.innerText || '').trim() : '';
-
-                return {question, options: result};
-            }""", qi)
-
-            question = r.get("question", "") if r else ""
-            raw = r.get("options", []) if r else []
-
-            opts = []
-            for i, opt in enumerate(raw):
-                label = chr(ord("A") + i)
-                el = self.page.locator(f'[data-ow-opt="{label}"]')
-                # 拆出平台显示的字母 + 纯内容（内容锚定用）
-                display_letter, content = split_option_text(opt["text"])
-                opts.append({"element": el, "text": opt["text"],
-                             "display_letter": display_letter,
-                             "wfLineOption": label, "wfLineContent": content})
-
-            return question, opts
-        except Exception as e:
-            await self._warn(f"  提取题{qi}异常: {e}")
-            return "", []
 
     @property
     def running(self) -> bool:

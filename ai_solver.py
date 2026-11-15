@@ -67,6 +67,7 @@ def query_ai(question_html: str, options: list[dict], api_key: str,
             msgs.insert(0, {"role": "system", "content": "你是煤矿安全考试助手，只回复正确选项字母。"})
         payload = {
             "model": model,
+            "messages": msgs,
             # thinking 模型的思考 token 也计入 max_tokens，预算太小会被截断导致答案缺失/半截
             "max_tokens": 1200 if is_multi else 500,
             "temperature": 0.0,
@@ -137,6 +138,12 @@ def query_ai(question_html: str, options: list[dict], api_key: str,
         if matches:
             # 取最长的匹配（多选通常是连续字母组合）
             return max(matches, key=len)
+        # 判断题兜底：模型可能回复“正确/错误/对/错/√/×”而不是 A/B
+        if "判断" in (question_type or ""):
+            if re.search(r"正确|对|√", text):
+                return "A"
+            if re.search(r"错误|错|×|X", text):
+                return "B"
         return None
     except Exception:
         return None

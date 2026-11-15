@@ -139,7 +139,9 @@ class OverWallEngine:
                     self.weekly_points = pts
 
                 if self.weekly_points >= self.weekly_target:
-                    await self._info(f"🎉 已达目标: {self.weekly_points}/{self.weekly_target}")
+                    await self._info(
+                        f"🎉 已达目标: {self.weekly_points}/{self.weekly_target}"
+                        "（含培训等已有积分），自动模式停止；如需继续刷学习积分，请调高目标或用手动模块")
                     break
 
                 remaining = self.weekly_target - self.weekly_points
@@ -152,8 +154,6 @@ class OverWallEngine:
 
                     if task_type == "exercise":
                         action_taken |= await self._run_exercise(api_key)
-                    elif task_type == "mock_exam":
-                        action_taken |= await self._run_mock_exam(api_key)
                     elif task_type == "article":
                         action_taken |= await self._run_articles(remaining)
                     elif task_type == "video":
@@ -184,16 +184,6 @@ class OverWallEngine:
         result = await self.executor.do_exercises(api_key)
         self.session_exercise_correct += result["correct"]
         self.session_exercise_wrong += result["wrong"]
-        self.session_points += result["points"]
-        self.weekly_points += result["points"]
-        await self._push_status()
-        return result["points"] > 0
-
-    async def _run_mock_exam(self, api_key: str) -> bool:
-        """执行模拟考试，返回是否成功获得积分"""
-        await self._info("→ 执行策略: 模拟考试")
-        result = await self.executor.do_mock_exam(api_key)
-        self.session_exercise_correct += result["correct"]
         self.session_points += result["points"]
         self.weekly_points += result["points"]
         await self._push_status()
